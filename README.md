@@ -1,6 +1,6 @@
 # Agent Filetree Memory MCP
 
-Agent Filetree Memory MCP is an experimental, framework-neutral memory service for agents. It stores a virtual Markdown file tree in PostgreSQL while keeping paths and document content encrypted at rest.
+Agent Filetree Memory MCP is a framework-neutral memory service for agents. It stores a simple virtual Markdown file tree in PostgreSQL while keeping paths and document content encrypted at rest.
 
 The project is designed around four boundaries:
 
