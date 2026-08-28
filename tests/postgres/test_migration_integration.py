@@ -39,14 +39,22 @@ import asyncio
 from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy import pool
+from agent_filetree_memory.postgres.migrations import migration_metadata
 
 config = context.config
 schema = config.attributes["agent_filetree_memory_schema"]
 
 def configure(connection):
+    def include_object(obj, name, type_, reflected, compare_to):
+        if type_ == "table":
+            return obj.schema == schema
+        return True
+
     context.configure(
         connection=connection,
+        target_metadata=migration_metadata(schema),
         include_schemas=True,
+        include_object=include_object,
         version_table_schema=schema,
     )
     with context.begin_transaction():
@@ -89,19 +97,38 @@ asyncio.run(online())
         await engine.dispose()
         return set(names)
 
-    async def reflected_columns() -> dict[str, set[str]]:
+    async def reflected_schema() -> tuple[
+        dict[str, set[str]], dict[str, set[str]]
+    ]:
         engine = create_async_engine(url)
         async with engine.connect() as connection:
             result = await connection.run_sync(
-                lambda sync_connection: {
-                    table.name: {
-                        column["name"]
-                        for column in inspect(sync_connection).get_columns(
-                            table.name, schema=schema
-                        )
-                    }
-                    for table in migration_metadata(schema).tables.values()
-                }
+                lambda sync_connection: (
+                    {
+                        table.name: {
+                            column["name"]
+                            for column in inspect(sync_connection).get_columns(
+                                table.name, schema=schema
+                            )
+                        }
+                        for table in migration_metadata(schema).tables.values()
+                    },
+                    {
+                        table.name: {
+                            constraint["name"]
+                            for constraint in (
+                                inspect(sync_connection).get_check_constraints(
+                                    table.name, schema=schema
+                                )
+                                + inspect(sync_connection).get_unique_constraints(
+                                    table.name, schema=schema
+                                )
+                            )
+                            if constraint["name"] is not None
+                        }
+                        for table in migration_metadata(schema).tables.values()
+                    },
+                )
             )
         await engine.dispose()
         return result
@@ -133,10 +160,23 @@ asyncio.run(online())
             table.name: {column.name for column in table.columns}
             for table in migration_metadata(schema).tables.values()
         }
-        reflected = asyncio.run(reflected_columns())
+        reflected, constraint_names = asyncio.run(reflected_schema())
         assert reflected
         assert reflected == expected_columns
         assert "principal_id" in reflected["memory_audit_events"]
+        assert "ck_memory_objects_object_kind" in constraint_names[
+            "memory_objects"
+        ]
+        assert "ck_memory_audit_events_outcome" in constraint_names[
+            "memory_audit_events"
+        ]
+        assert any(
+            name.startswith(
+                "uq_memory_idempotency_workspace_id_agent_profile_id_loo_"
+            )
+            for name in constraint_names["memory_idempotency"]
+        )
+        command.check(config)
         command.downgrade(config, "agent_filetree_memory@base")
         assert asyncio.run(table_names()) == {"alembic_version"}
     finally:

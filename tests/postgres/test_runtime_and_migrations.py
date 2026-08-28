@@ -79,6 +79,7 @@ def test_packaged_revision_and_host_configuration():
     location = package_version_location()
     assert isinstance(location, Path)
     assert (location / "0001_encrypted_filetree.py").is_file()
+    assert (location / "0002_normalize_constraint_names.py").is_file()
     config = Config()
     configure_host_alembic(config, schema="custom_memory")
     assert config.attributes[SCHEMA_ATTRIBUTE] == "custom_memory"
