@@ -213,10 +213,20 @@ def _browser_listing(path: str, entries: Any) -> dict[str, Any]:
 
 async def _refresh_document(
     service: MemoryService,
-    invocation: VerifiedInvocation,
+    resolver: InvocationResolver,
+    ctx: Context,
+    app_instance_id: Any,
+    signing_key: bytes,
     path: str,
 ) -> dict[str, Any] | None:
     try:
+        invocation = await _verified_app_invocation(
+            resolver,
+            ctx,
+            MemoryAction.READ,
+            app_instance_id,
+            signing_key,
+        )
         snapshot = await service.read(invocation, path)
         return document_payload(snapshot)
     except (AuthorizationDenied, NotFoundOrDenied):
@@ -225,15 +235,42 @@ async def _refresh_document(
 
 async def _refresh_listing(
     service: MemoryService,
-    invocation: VerifiedInvocation,
+    resolver: InvocationResolver,
+    ctx: Context,
+    app_instance_id: Any,
+    signing_key: bytes,
     path: str,
 ) -> dict[str, Any]:
     parent = _parent_path(path)
     try:
+        invocation = await _verified_app_invocation(
+            resolver,
+            ctx,
+            MemoryAction.LIST,
+            app_instance_id,
+            signing_key,
+        )
         entries = await service.list(invocation, parent)
         return _browser_listing(parent, entries)
     except (AuthorizationDenied, NotFoundOrDenied):
         return _browser_listing(parent, ())
+
+
+async def _refresh_document_and_listing(
+    service: MemoryService,
+    resolver: InvocationResolver,
+    ctx: Context,
+    app_instance_id: Any,
+    signing_key: bytes,
+    path: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    selected = await _refresh_document(
+        service, resolver, ctx, app_instance_id, signing_key, path
+    )
+    listing = await _refresh_listing(
+        service, resolver, ctx, app_instance_id, signing_key, path
+    )
+    return selected, listing
 
 
 def _next_key() -> str:
@@ -423,8 +460,14 @@ def create_memory_browser_app(
                 idempotency_key=idempotency_key,
             )
         except VersionConflict:
-            selected = await _refresh_document(service, invocation, path)
-            listing = await _refresh_listing(service, invocation, path)
+            selected, listing = await _refresh_document_and_listing(
+                service,
+                invocation_resolver,
+                ctx,
+                app_instance_id,
+                signing_key,
+                path,
+            )
             return _mutation_response(
                 ok=False,
                 code="version_conflict",
@@ -441,8 +484,14 @@ def create_memory_browser_app(
                 current_version=selected["version"] if selected else None,
             )
         except IdempotencyConflict:
-            selected = await _refresh_document(service, invocation, path)
-            listing = await _refresh_listing(service, invocation, path)
+            selected, listing = await _refresh_document_and_listing(
+                service,
+                invocation_resolver,
+                ctx,
+                app_instance_id,
+                signing_key,
+                path,
+            )
             return _mutation_response(
                 ok=False,
                 code="idempotency_conflict",
@@ -459,8 +508,14 @@ def create_memory_browser_app(
                 current_version=selected["version"] if selected else None,
             )
 
-        selected = await _refresh_document(service, invocation, path)
-        listing = await _refresh_listing(service, invocation, path)
+        selected, listing = await _refresh_document_and_listing(
+            service,
+            invocation_resolver,
+            ctx,
+            app_instance_id,
+            signing_key,
+            path,
+        )
         replay = result.idempotent_replay
         return _mutation_response(
             ok=True,
@@ -501,8 +556,14 @@ def create_memory_browser_app(
                 idempotency_key=idempotency_key,
             )
         except VersionConflict:
-            selected = await _refresh_document(service, invocation, path)
-            listing = await _refresh_listing(service, invocation, path)
+            selected, listing = await _refresh_document_and_listing(
+                service,
+                invocation_resolver,
+                ctx,
+                app_instance_id,
+                signing_key,
+                path,
+            )
             return _mutation_response(
                 ok=False,
                 code="version_conflict",
@@ -521,8 +582,14 @@ def create_memory_browser_app(
                 ),
             )
         except IdempotencyConflict:
-            selected = await _refresh_document(service, invocation, path)
-            listing = await _refresh_listing(service, invocation, path)
+            selected, listing = await _refresh_document_and_listing(
+                service,
+                invocation_resolver,
+                ctx,
+                app_instance_id,
+                signing_key,
+                path,
+            )
             return _mutation_response(
                 ok=False,
                 code="idempotency_conflict",
@@ -541,8 +608,14 @@ def create_memory_browser_app(
                 ),
             )
 
-        selected = await _refresh_document(service, invocation, path)
-        listing = await _refresh_listing(service, invocation, path)
+        selected, listing = await _refresh_document_and_listing(
+            service,
+            invocation_resolver,
+            ctx,
+            app_instance_id,
+            signing_key,
+            path,
+        )
         replay = result.idempotent_replay
         return _mutation_response(
             ok=True,
@@ -581,8 +654,14 @@ def create_memory_browser_app(
                 idempotency_key=idempotency_key,
             )
         except VersionConflict:
-            selected = await _refresh_document(service, invocation, path)
-            listing = await _refresh_listing(service, invocation, path)
+            selected, listing = await _refresh_document_and_listing(
+                service,
+                invocation_resolver,
+                ctx,
+                app_instance_id,
+                signing_key,
+                path,
+            )
             return _mutation_response(
                 ok=False,
                 code="version_conflict",
@@ -601,8 +680,14 @@ def create_memory_browser_app(
                 ),
             )
         except IdempotencyConflict:
-            selected = await _refresh_document(service, invocation, path)
-            listing = await _refresh_listing(service, invocation, path)
+            selected, listing = await _refresh_document_and_listing(
+                service,
+                invocation_resolver,
+                ctx,
+                app_instance_id,
+                signing_key,
+                path,
+            )
             return _mutation_response(
                 ok=False,
                 code="idempotency_conflict",
@@ -621,7 +706,14 @@ def create_memory_browser_app(
                 ),
             )
 
-        listing = await _refresh_listing(service, invocation, path)
+        listing = await _refresh_listing(
+            service,
+            invocation_resolver,
+            ctx,
+            app_instance_id,
+            signing_key,
+            path,
+        )
         replay = result.idempotent_replay
         return _mutation_response(
             ok=True,

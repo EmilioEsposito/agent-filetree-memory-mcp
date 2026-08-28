@@ -185,6 +185,7 @@ async def test_ui_backend_calls_are_hashed_and_use_current_context(
 async def test_ui_save_returns_visible_conflict_and_preserves_draft(
     service, resolver, error, expected_code
 ):
+    resolver.action_scoped = True
     service.write_error = error
     server = create_mcp_server(service, resolver, include_app=True)
 
@@ -211,6 +212,71 @@ async def test_ui_save_returns_visible_conflict_and_preserves_draft(
     assert [action for _, action in resolver.calls] == [
         MemoryAction.LIST,
         MemoryAction.WRITE,
+        MemoryAction.READ,
+        MemoryAction.LIST,
+    ]
+
+
+async def test_ui_mutations_refresh_with_fresh_action_scoped_invocations(
+    service, resolver
+):
+    resolver.action_scoped = True
+    server = create_mcp_server(service, resolver, include_app=True)
+
+    async with Client(server) as client:
+        opened = await client.call_tool("memory_browse", {})
+        payload = opened.structured_content
+        save_name = _backend_name(payload, "ui_memory_save")
+        append_name = _backend_name(payload, "ui_memory_append")
+        delete_name = _backend_name(payload, "ui_memory_delete")
+
+        saved = await client.call_tool(
+            save_name,
+            _with_app_instance(
+                payload,
+                path=PRIVATE_PATH,
+                content="# SAVED",
+                expected_version=7,
+                idempotency_key="save-1",
+            ),
+        )
+        appended = await client.call_tool(
+            append_name,
+            _with_app_instance(
+                payload,
+                path=PRIVATE_PATH,
+                content="\n\nAppended.",
+                expected_version=8,
+                idempotency_key="append-1",
+            ),
+        )
+        deleted = await client.call_tool(
+            delete_name,
+            _with_app_instance(
+                payload,
+                path=PRIVATE_PATH,
+                expected_version=9,
+                idempotency_key="delete-1",
+            ),
+        )
+
+    assert saved.data["ok"] is True
+    assert saved.data["selected"]["content"] == "# SAVED"
+    assert appended.data["ok"] is True
+    assert appended.data["selected"]["content"].endswith("Appended.")
+    assert deleted.data["ok"] is True
+    assert deleted.data["selected"] == {}
+    assert deleted.data["listing"]["documents"] == []
+    assert [action for _, action in resolver.calls] == [
+        MemoryAction.LIST,
+        MemoryAction.WRITE,
+        MemoryAction.READ,
+        MemoryAction.LIST,
+        MemoryAction.APPEND,
+        MemoryAction.READ,
+        MemoryAction.LIST,
+        MemoryAction.DELETE,
+        MemoryAction.LIST,
     ]
 
 

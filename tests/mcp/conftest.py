@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 
@@ -38,6 +39,7 @@ class StubMemoryService:
     async def list(
         self, invocation: VerifiedInvocation, path: str = "/"
     ) -> list[MemoryEntry]:
+        invocation.require(MemoryAction.LIST)
         self.calls.append(("list", invocation, {"path": path}))
         if path == "/":
             return [
@@ -64,6 +66,7 @@ class StubMemoryService:
     async def read(
         self, invocation: VerifiedInvocation, path: str
     ) -> DocumentSnapshot:
+        invocation.require(MemoryAction.READ)
         self.calls.append(("read", invocation, {"path": path}))
         assert self.snapshot is not None
         return self.snapshot
@@ -77,6 +80,7 @@ class StubMemoryService:
         expected_version: int | None,
         idempotency_key: str,
     ) -> WriteResult:
+        invocation.require(MemoryAction.WRITE)
         self.calls.append(
             (
                 "write",
@@ -105,6 +109,7 @@ class StubMemoryService:
         expected_version: int,
         idempotency_key: str,
     ) -> WriteResult:
+        invocation.require(MemoryAction.APPEND)
         self.calls.append(
             (
                 "append",
@@ -137,6 +142,7 @@ class StubMemoryService:
         expected_version: int,
         idempotency_key: str,
     ) -> DeleteResult:
+        invocation.require(MemoryAction.DELETE)
         self.calls.append(
             (
                 "delete",
@@ -161,12 +167,18 @@ class StubMemoryService:
 class RecordingResolver:
     def __init__(self, invocation: VerifiedInvocation) -> None:
         self.invocation = invocation
+        self.action_scoped = False
         self.calls: list[tuple[object, MemoryAction]] = []
 
     async def __call__(
         self, ctx: object, action: MemoryAction
     ) -> VerifiedInvocation:
         self.calls.append((ctx, action))
+        if self.action_scoped:
+            return replace(
+                self.invocation,
+                allowed_actions=frozenset({action}),
+            )
         return self.invocation
 
 
