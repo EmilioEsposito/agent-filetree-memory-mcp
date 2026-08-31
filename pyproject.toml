@@ -22,6 +22,12 @@ dependencies = [
     "PyJWT[crypto]>=2.13.0,<3",
 ]
 
+[project.urls]
+Homepage = "https://github.com/EmilioEsposito/agent-filetree-memory-mcp"
+Documentation = "https://github.com/EmilioEsposito/agent-filetree-memory-mcp/tree/main/docs"
+Repository = "https://github.com/EmilioEsposito/agent-filetree-memory-mcp.git"
+Issues = "https://github.com/EmilioEsposito/agent-filetree-memory-mcp/issues"
+
 [project.optional-dependencies]
 postgres = [
     "alembic>=1.18.5,<2",

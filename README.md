@@ -13,7 +13,21 @@ The initial tool surface is intentionally small: list, read, write, append, and 
 
 ## Status
 
-This repository is pre-release and local-only. No package or hosted service has been published.
+This project is an early alpha. APIs, migrations, and data formats may change
+before 1.0.
+
+## Installation
+
+Install the complete standalone package from PyPI:
+
+```shell
+pip install 'agent-filetree-memory-mcp[all]'
+```
+
+The base package contains the framework-neutral domain and application layers.
+The `postgres`, `mcp`, `app`, and `web` extras are available for narrower
+integrations. See the [standalone guide](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/docs/standalone.md)
+for database setup, security-sensitive configuration, and server startup.
 
 ## Intended package layers
 
@@ -30,12 +44,12 @@ This repository is pre-release and local-only. No package or hosted service has 
 
 The service authorizes before storage lookup or decryption. Missing and unauthorized documents share the same public failure shape. Database rows contain opaque routing, authorization, version, and lifecycle fields; human-readable paths, titles, tags, snippets, Markdown, and directory manifests are encrypted.
 
-See [SECURITY.md](SECURITY.md) for the threat model and disclosure guidance.
-See [docs/authentication.md](docs/authentication.md) for the two-layer transport
+See [SECURITY.md](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/SECURITY.md) for the threat model and disclosure guidance.
+See [docs/authentication.md](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/docs/authentication.md) for the two-layer transport
 and durable agent-identity design.
-See [docs/standalone.md](docs/standalone.md) for running the packaged stdio
+See [docs/standalone.md](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/docs/standalone.md) for running the packaged stdio
 server and retention janitor from a static PostgreSQL URL.
-See [docs/management-ui.md](docs/management-ui.md) for mounting the bundled
+See [docs/management-ui.md](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/docs/management-ui.md) for mounting the bundled
 administrative UI with a host-supplied identity dependency.
 
 The optional control plane is provider-neutral. Hosts inject verified
@@ -47,4 +61,4 @@ agent management never imply content access or decryption.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/LICENSE).

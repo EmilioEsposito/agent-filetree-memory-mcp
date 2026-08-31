@@ -12,7 +12,7 @@ Install the complete package extra:
 pip install 'agent-filetree-memory-mcp[all]'
 ```
 
-Nothing has been published yet. A locally built wheel behaves the same way:
+To test a locally built wheel instead:
 
 ```shell
 uv build
