@@ -518,7 +518,7 @@ function AgentMemoryManager() {
         setAgentAliasInput("");
         setSelectedAgentSlug(slug);
       },
-      `Agent ${slug} created without content access.`,
+      `Agent ${slug} created with full access.`,
     ).catch(() => undefined);
   }
 
@@ -864,7 +864,7 @@ function AgentMemoryManager() {
                 <input className={INPUT} value={agentSlugInput} onChange={(event) => setAgentSlugInput(event.target.value)} placeholder="agent-slug" />
                 <input className={INPUT} value={agentAliasInput} onChange={(event) => setAgentAliasInput(event.target.value)} placeholder="Display name (optional)" />
                 <button className={`${BUTTON} w-full bg-blue-600 text-white hover:bg-blue-700`} disabled={!agentSlugInput.trim() || busy === "agent-create"} onClick={() => void handleCreateAgent()}>
-                  {busy === "agent-create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Create without content access
+                  {busy === "agent-create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Create agent
                 </button>
               </div>
             )}

@@ -53,6 +53,9 @@ registered for the exact externally visible `/ui/` URL.
 Workspace owners and administrators can see agent existence and slugs. Agent
 management permission is independent from content permission, so they may
 rename agents, transfer ownership, and manage grants without reading memory.
+Creating an agent is the intentional exception: the creator receives an
+explicit full-content grant in the same transaction as the new namespace.
+That grant can later be changed or revoked like any other content grant.
 The deployment decides whether an administrator may explicitly grant their own
 account reader/editor/full access. When enabled, the UI shows a warning before
 the API performs and audits that self-grant.

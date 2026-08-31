@@ -111,14 +111,14 @@ async def test_management_and_content_access_are_orthogonal() -> None:
             )
             assert len(owner_agents) == 1
             assert owner_agents[0].can_manage is True
-            assert owner_agents[0].content_role is None
-            with pytest.raises(AuthorizationDenied):
-                await namespaces.resolve_or_create(
-                    workspace_slug=workspace_slug,
-                    agent_slug=agent_slug,
-                    principal_id=owner,
-                    action=MemoryAction.READ,
-                )
+            assert owner_agents[0].content_role is AgentGrantRole.ADMIN
+            creator_binding = await namespaces.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                principal_id=owner,
+                action=MemoryAction.DELETE,
+            )
+            assert creator_binding.agent_role is AgentGrantRole.ADMIN
 
             assert await management.invite_member(
                 principal_id=owner,
@@ -211,6 +211,16 @@ async def test_management_and_content_access_are_orthogonal() -> None:
             assert by_principal[owner].content_role is AgentGrantRole.READER
             assert by_principal[member].explicit_manager is False
             assert by_principal[member].content_role is AgentGrantRole.EDITOR
+
+            events = await management.list_audit_events(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+            )
+            assert any(
+                event.action == "agent.content.grant"
+                and event.target_id == owner
+                for event in events
+            )
         finally:
             await _delete_workspace(sessions, workspace_slug)
 

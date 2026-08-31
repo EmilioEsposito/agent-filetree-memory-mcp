@@ -41,6 +41,8 @@ without moving or duplicating its memory. Management permission is independent
 from reader/editor/full content access, and workspace administrators may see
 agent slugs without implicitly gaining decryption access. A deployer may allow
 explicit, audited administrator self-grants or disable them as policy.
+Agent creation atomically provisions an explicit full-content grant for the
+creator; it does not grant content access to other workspace administrators.
 
 ## Database injection
 

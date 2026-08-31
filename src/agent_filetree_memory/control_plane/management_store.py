@@ -865,6 +865,18 @@ class ManagementStore:
                     )
                 )
             )
+            creator_role = AgentGrantRole.ADMIN
+            await session.execute(
+                self._tables.agent_grants.insert().values(
+                    **self._signed(
+                        "agent_grant",
+                        workspace_id=access.workspace_id,
+                        agent_profile_id=agent_profile_id,
+                        principal_id=principal_id,
+                        role=creator_role.value,
+                    )
+                )
+            )
             await self._audit(
                 session,
                 workspace_id=access.workspace_id,
@@ -872,6 +884,14 @@ class ManagementStore:
                 action="agent.create",
                 target_kind="agent",
                 target_id=agent_profile_id,
+            )
+            await self._audit(
+                session,
+                workspace_id=access.workspace_id,
+                actor_principal_id=principal_id,
+                action="agent.content.grant",
+                target_kind="principal",
+                target_id=principal_id,
             )
         summaries = await self.list_agents(
             principal_id=principal_id,
