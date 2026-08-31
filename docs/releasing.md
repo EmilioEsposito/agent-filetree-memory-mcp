@@ -36,9 +36,9 @@ definitive availability check.
 ## Preflight a release
 
 Choose a version that has never been uploaded to the target index. PyPI release
-filenames and versions cannot be replaced. Update both `project.version` in
-`pyproject.toml` and `__version__` in
-`src/agent_filetree_memory/__init__.py`, then run:
+filenames and versions cannot be replaced. Update `project.version` in
+`pyproject.toml`; the runtime `__version__` is read from the installed package
+metadata automatically. Then run:
 
 ```shell
 uv run --locked pytest
@@ -65,8 +65,9 @@ the version being released on later runs.
    environment:
 
 ```shell
-python -m venv /tmp/agent-filetree-memory-pypi
-/tmp/agent-filetree-memory-pypi/bin/pip install \
+uv venv /tmp/agent-filetree-memory-pypi
+uv pip install \
+  --python /tmp/agent-filetree-memory-pypi/bin/python \
   'agent-filetree-memory-mcp[all]==0.3.0'
 /tmp/agent-filetree-memory-pypi/bin/python -c \
   'import agent_filetree_memory; print(agent_filetree_memory.__version__)'

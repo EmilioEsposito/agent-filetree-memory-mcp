@@ -9,15 +9,17 @@ DDL. Platforms with rotating credentials should embed the package through
 Install the complete package extra:
 
 ```shell
-pip install 'agent-filetree-memory-mcp[all]'
+uv tool install 'agent-filetree-memory-mcp[all]'
 ```
 
 To test a locally built wheel instead:
 
 ```shell
 uv build
-python -m venv /tmp/agent-filetree-memory-wheel
-/tmp/agent-filetree-memory-wheel/bin/pip install 'dist/agent_filetree_memory_mcp-0.3.0-py3-none-any.whl[all]'
+uv venv /tmp/agent-filetree-memory-wheel
+uv pip install \
+  --python /tmp/agent-filetree-memory-wheel/bin/python \
+  'dist/agent_filetree_memory_mcp-0.3.0-py3-none-any.whl[all]'
 ```
 
 ## Database prerequisite

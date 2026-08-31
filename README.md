@@ -1,5 +1,10 @@
 # Agent Filetree Memory MCP
 
+[![PyPI version](https://img.shields.io/pypi/v/agent-filetree-memory-mcp.svg)](https://pypi.org/project/agent-filetree-memory-mcp/)
+[![Python versions](https://img.shields.io/pypi/pyversions/agent-filetree-memory-mcp.svg)](https://pypi.org/project/agent-filetree-memory-mcp/)
+[![PyPI status](https://img.shields.io/pypi/status/agent-filetree-memory-mcp.svg)](https://pypi.org/project/agent-filetree-memory-mcp/)
+[![License](https://img.shields.io/pypi/l/agent-filetree-memory-mcp.svg)](https://spdx.org/licenses/Apache-2.0.html)
+
 Agent Filetree Memory MCP is a framework-neutral memory service for agents. It stores a simple virtual Markdown file tree in PostgreSQL while keeping paths and document content encrypted at rest.
 
 The project is designed around four boundaries:
@@ -18,10 +23,16 @@ before 1.0.
 
 ## Installation
 
-Install the complete standalone package from PyPI:
+Add the complete package to a uv-managed project:
 
 ```shell
-pip install 'agent-filetree-memory-mcp[all]'
+uv add 'agent-filetree-memory-mcp[all]'
+```
+
+Or install its standalone commands in an isolated environment:
+
+```shell
+uv tool install 'agent-filetree-memory-mcp[all]'
 ```
 
 The base package contains the framework-neutral domain and application layers.

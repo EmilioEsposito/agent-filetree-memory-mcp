@@ -6,7 +6,7 @@ static assets, and route composition helpers, which prevents frontend/backend
 version drift.
 
 ```shell
-pip install 'agent-filetree-memory-mcp[web,mcp]'
+uv add 'agent-filetree-memory-mcp[web,mcp]'
 ```
 
 An embedding service constructs `NamespaceStore`, `ManagementStore`, and
