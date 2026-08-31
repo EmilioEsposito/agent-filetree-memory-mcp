@@ -48,12 +48,11 @@ conversations. A host can issue a fresh invocation capability for every run
 without changing that memory scope.
 
 `principal_id` is deliberately not part of that durable scope. It identifies
-the authenticated actor for the current capability. A host may initially issue
-capabilities only when that principal created or owns the profile, then later
-authorize multiple workspace members to the same profile without migrating its
-memory. Workspace membership, profile visibility, invitations, and revocation
-are host control-plane responsibilities; this package does not yet provide an
-ACL or sharing UI. A new host should default every profile to private.
+the authenticated actor for the current capability. The package's optional
+control plane stores workspace membership, profile visibility, invitations,
+management grants, content grants, and content-free audit events. The host
+still owns identity verification and supplies the stable principal; it may use
+the package control plane or enforce an equivalent external policy.
 
 ## Provisioning a connection for a generic MCP client
 
@@ -87,22 +86,20 @@ appear in configuration, browser history, proxy logs, and support diagnostics;
 never place user IDs, immutable database IDs, secrets, or sensitive memory in
 the URL.
 
-This package exposes the memory server building blocks but does not implement
-dynamic slug routing or create-on-connect. Those are responsibilities of the
-embedding host.
+`NamespaceStore.resolve_or_create(...)` implements the atomic authorization and
+create-on-connect decision. The embedding host remains responsible for mapping
+its authenticated request and route into that call; URL metadata by itself is
+never trusted.
 
-## Possible future collaboration model (non-normative)
+## Collaboration control plane
 
-A later hosted control plane could add workspace membership plus per-agent
-reader, editor, and admin grants so multiple principals can deliberately receive
-capabilities for one durable profile. An optional management page could then
-list, rename, share, revoke, and recover agent aliases; it would be a convenience
-surface, not a prerequisite for connecting.
-
-This is an evolution path, not a v1 feature. The current package implements no
-membership database, sharing ACL, invitation flow, or sharing UI. A host remains
-responsible for capability issuance and should make every new agent profile
-private by default.
+The optional control plane supports workspace owners, administrators, and
+members; per-agent content roles; independent per-agent managers; invitations;
+ownership transfer; and audit history. Management is deliberately not a
+superset of read or write. A workspace administrator can enumerate agent slugs
+and manage metadata without decrypting content. If deployment policy enables
+administrator self-grants, the management API requires an explicit confirmation
+and records the grant as a content-free audit event.
 
 There is intentionally no universal `agent_name` or `agent_profile_id` memory
 tool argument. Names are mutable and model-controlled arguments are not an
@@ -122,3 +119,8 @@ the issuer, audience, principal, workspace, and agent profile. The binding
 deliberately excludes conversation, invocation, and capability identifiers, so
 the same agent's open UI remains valid after a short-lived capability refresh.
 A different principal or agent profile must open its own App instance.
+
+The bundled administrative web UI is a separate surface. It authenticates a
+human through a host-supplied FastAPI dependency, then exposes only operations
+authorized by the control plane. Browser OIDC configuration is public client
+metadata and never replaces API-side token verification.

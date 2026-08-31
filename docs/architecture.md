@@ -26,17 +26,21 @@ trusted host
             -> injected DEK provider
   -> MCP tools
        -> optional current-capability MCP App
+  -> authenticated management API
+       -> optional workspace and agent control plane
+       -> same application service for memory reads and writes
+  -> bundled management UI
 ```
 
 The application layer receives an immutable `VerifiedInvocation`. It never accepts workspace or agent-profile identifiers alongside an operation. Transport adapters resolve the invocation from trusted request context before calling the service.
 
 The durable namespace is `(workspace_id, agent_profile_id)`. `principal_id` is a
-separately authenticated actor recorded in the signed invocation, so a trusted
-host can later authorize more than one workspace member to the same agent
-profile without moving or duplicating memory. This package intentionally does
-not implement workspace membership or sharing ACLs in its first release; the
-capability issuer remains the enforcement boundary and should default profiles
-to private.
+separately authenticated actor recorded in the signed invocation. The optional
+control plane can authorize multiple workspace members to the same profile
+without moving or duplicating its memory. Management permission is independent
+from reader/editor/full content access, and workspace administrators may see
+agent slugs without implicitly gaining decryption access. A deployer may allow
+explicit, audited administrator self-grants or disable them as policy.
 
 ## Database injection
 
@@ -88,12 +92,22 @@ The app is a convenience view over the same service layer. Its backend helpers r
 
 Plaintext drafts remain in ephemeral component memory. They are not placed in URLs, browser storage, model-visible context, or the initial widget bootstrap result.
 
+## Management UI
+
+The wheel contains a prebuilt React application plus a provider-neutral
+FastAPI management API. The host injects the authenticated principal, database
+session factory, encryption keys, MCP transport authentication, and policy.
+The UI calls the same application service as MCP; it has no direct database or
+privileged decryption path. FastAPI serves `/api`, `/mcp`, and `/ui` from one
+process, so the frontend and API remain version-matched without requiring Node
+at installation time.
+
 ## Deliberate non-goals
 
 - Conversation transcript persistence
 - Automatic memory extraction from prompts or messages
 - Semantic or vector search
-- Built-in workspace membership, sharing, or declassification workflows
+- Automated declassification or content-approval workflows
 - Filesystem mounting or online Git synchronization
 - Binary attachments or collaborative editing
-- A cross-scope administrator browser
+- A deployer-independent user directory or identity provider

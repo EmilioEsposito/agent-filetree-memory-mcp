@@ -13,6 +13,7 @@ from agent_filetree_memory.postgres import (
     validate_schema_name,
 )
 from agent_filetree_memory.postgres.migrations import (
+    CONSTRAINT_NAMESPACE_ATTRIBUTE,
     SCHEMA_ATTRIBUTE,
     configure_host_alembic,
     migration_metadata,
@@ -34,12 +35,21 @@ def test_schema_validation_and_metadata_are_configurable():
     metadata = migration_metadata("memory_2")
     assert metadata.schema == "memory_2"
     assert {table.name for table in metadata.tables.values()} == {
+        "_afm_control_plane_installation",
+        "agent_grants",
+        "agent_managers",
+        "agent_profiles",
+        "management_audit_events",
         "memory_audit_events",
         "memory_idempotency",
         "memory_objects",
         "memory_quotas",
         "memory_rate_buckets",
         "memory_versions",
+        "principal_profiles",
+        "workspace_invitations",
+        "workspace_members",
+        "workspaces",
     }
     objects = metadata.tables["memory_2.memory_objects"]
     assert {column.name for column in objects.primary_key.columns} == {
@@ -50,6 +60,18 @@ def test_schema_validation_and_metadata_are_configurable():
     audit = metadata.tables["memory_2.memory_audit_events"]
     assert "principal_id" in audit.c
     assert not audit.c.principal_id.primary_key
+
+    custom_names = migration_metadata(
+        "memory_2",
+        constraint_namespace="memory_2",
+    )
+    workspace_constraints = {
+        constraint.name
+        for constraint in custom_names.tables[
+            "memory_2.workspace_members"
+        ].constraints
+    }
+    assert "ck_memory_2_workspace_members_role" in workspace_constraints
 
 
 def test_store_config_requires_secret_blind_index_key_and_opaque_namespace():
@@ -80,9 +102,18 @@ def test_packaged_revision_and_host_configuration():
     assert isinstance(location, Path)
     assert (location / "0001_encrypted_filetree.py").is_file()
     assert (location / "0002_normalize_constraint_names.py").is_file()
+    assert (location / "0003_management_control_plane.py").is_file()
     config = Config()
-    configure_host_alembic(config, schema="custom_memory")
+    configure_host_alembic(
+        config,
+        schema="custom_memory",
+        constraint_namespace="custom_memory",
+    )
     assert config.attributes[SCHEMA_ATTRIBUTE] == "custom_memory"
+    assert (
+        config.attributes[CONSTRAINT_NAMESPACE_ATTRIBUTE]
+        == "custom_memory"
+    )
     assert str(location) in config.get_main_option("version_locations")
 
 

@@ -17,7 +17,7 @@ Nothing has been published yet. A locally built wheel behaves the same way:
 ```shell
 uv build
 python -m venv /tmp/agent-filetree-memory-wheel
-/tmp/agent-filetree-memory-wheel/bin/pip install 'dist/agent_filetree_memory_mcp-0.1.0-py3-none-any.whl[all]'
+/tmp/agent-filetree-memory-wheel/bin/pip install 'dist/agent_filetree_memory_mcp-0.2.0-py3-none-any.whl[all]'
 ```
 
 ## Database prerequisite
@@ -67,6 +67,11 @@ Start the stdio process only after the migration and configuration are in place:
 ```shell
 agent-filetree-memory-mcp
 ```
+
+The stdio launcher intentionally exposes one pre-authorized agent and does not
+serve the cross-agent management UI. A hosted or self-hosted HTTP deployment
+can compose the management API, MCP transport, and bundled UI as described in
+[management-ui.md](management-ui.md).
 
 ## Host-operated retention janitor
 

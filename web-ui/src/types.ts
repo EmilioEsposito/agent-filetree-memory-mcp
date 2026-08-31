@@ -1,0 +1,69 @@
+export type WorkspaceRole = "owner" | "admin" | "member";
+export type ContentRole = "reader" | "editor" | "full_access";
+
+export interface CurrentPrincipal {
+  principal_id: string;
+  email: string;
+  display_name: string;
+  allow_admin_self_grant: boolean;
+}
+
+export interface WorkspaceSummary {
+  workspace_id: string;
+  slug: string;
+  role: WorkspaceRole;
+  agent_count: number;
+  member_count: number;
+  created_at: string;
+}
+
+export interface AgentSummary {
+  agent_profile_id: string;
+  slug: string;
+  display_alias: string;
+  content_role: ContentRole | null;
+  can_manage: boolean;
+  created_at: string;
+}
+
+export interface MemberAccess {
+  principal_id: string;
+  email: string | null;
+  display_name: string | null;
+  workspace_role: WorkspaceRole;
+  content_role: ContentRole | null;
+  explicit_manager: boolean;
+}
+
+export interface InvitationSummary {
+  invitation_id: string;
+  email: string;
+  role: "admin" | "member";
+  invited_by_principal_id: string;
+  created_at: string;
+}
+
+export interface ManagementEvent {
+  event_id: string;
+  actor_principal_id: string;
+  action: string;
+  target_kind: string;
+  target_id: string;
+  occurred_at: string;
+}
+
+export interface MemoryEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "document";
+  version: number;
+  updated_at: string;
+}
+
+export interface MemoryDocument {
+  path: string;
+  content: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}

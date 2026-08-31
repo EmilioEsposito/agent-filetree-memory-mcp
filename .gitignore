@@ -16,6 +16,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
-dist/
+/dist/
+/web-ui/node_modules/
 .coverage
 htmlcov/

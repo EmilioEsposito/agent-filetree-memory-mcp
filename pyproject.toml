@@ -1,6 +1,6 @@
 [project]
 name = "agent-filetree-memory-mcp"
-version = "0.1.2"
+version = "0.2.0"
 description = "Encrypted, capability-scoped, versioned Markdown file-tree memory for MCP agents"
 readme = "README.md"
 license = "Apache-2.0"
@@ -33,12 +33,21 @@ app = [
     "fastmcp[apps]==3.4.2",
     "prefab-ui==0.20.2",
 ]
+web = [
+    "alembic>=1.18.5,<2",
+    "asyncpg>=0.31.0,<0.32",
+    "fastapi==0.141.1",
+    "SQLAlchemy[asyncio]>=2.0.51,<2.1",
+    "uvicorn==0.52.4",
+]
 all = [
     "alembic>=1.18.5,<2",
     "asyncpg>=0.31.0,<0.32",
     "SQLAlchemy[asyncio]>=2.0.51,<2.1",
+    "fastapi==0.141.1",
     "fastmcp[apps]==3.4.2",
     "prefab-ui==0.20.2",
+    "uvicorn==0.52.4",
 ]
 
 [project.scripts]
@@ -66,11 +75,13 @@ include = [
     "/tests",
     "/examples",
     "/docs",
+    "/web-ui",
     "/README.md",
     "/SECURITY.md",
     "/LICENSE",
     "/pyproject.toml",
 ]
+exclude = ["/web-ui/node_modules"]
 
 [tool.uv]
 required-environments = [

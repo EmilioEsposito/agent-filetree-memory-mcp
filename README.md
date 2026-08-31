@@ -21,8 +21,10 @@ This repository is pre-release and local-only. No package or hosted service has 
 - `agent_filetree_memory.application`: authorization-first memory operations.
 - `agent_filetree_memory.crypto`: envelope encryption and pluggable data-key providers.
 - `agent_filetree_memory.postgres`: PostgreSQL persistence and packaged Alembic migrations.
+- `agent_filetree_memory.control_plane`: optional workspaces, durable agent profiles, membership, independent management/content grants, and audit.
 - `agent_filetree_memory.mcp`: headless MCP tools.
 - `agent_filetree_memory.mcp_app`: an optional current-capability browser and editor.
+- `agent_filetree_memory.web`: the version-matched management API composition and bundled React UI.
 
 ## Security properties
 
@@ -33,6 +35,8 @@ See [docs/authentication.md](docs/authentication.md) for the two-layer transport
 and durable agent-identity design.
 See [docs/standalone.md](docs/standalone.md) for running the packaged stdio
 server and retention janitor from a static PostgreSQL URL.
+See [docs/management-ui.md](docs/management-ui.md) for mounting the bundled
+administrative UI with a host-supplied identity dependency.
 
 ## License
 

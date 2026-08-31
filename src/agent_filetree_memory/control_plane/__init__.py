@@ -1,0 +1,53 @@
+"""Optional workspace, agent, membership, and management control plane."""
+
+from .management_store import (
+    AgentSummary,
+    InvitationSummary,
+    ManagementConflict,
+    ManagementEvent,
+    ManagementStore,
+    MemberAccess,
+    PrincipalProfile,
+    SelfGrantDisabled,
+    WorkspaceSummary,
+    content_role_from_name,
+    content_role_name,
+    normalize_email,
+)
+from .namespace_store import (
+    DEFAULT_SCHEMA,
+    AgentGrantRole,
+    NamespaceBinding,
+    NamespaceStore,
+    NamespaceTables,
+    WorkspaceRole,
+    derive_namespace_integrity_key,
+    namespace_tables_for_schema,
+    role_allows_action,
+    validate_slug,
+)
+
+__all__ = [
+    "DEFAULT_SCHEMA",
+    "AgentGrantRole",
+    "AgentSummary",
+    "InvitationSummary",
+    "ManagementConflict",
+    "ManagementEvent",
+    "ManagementStore",
+    "MemberAccess",
+    "NamespaceBinding",
+    "NamespaceStore",
+    "NamespaceTables",
+    "PrincipalProfile",
+    "SelfGrantDisabled",
+    "WorkspaceRole",
+    "WorkspaceSummary",
+    "content_role_from_name",
+    "content_role_name",
+    "derive_namespace_integrity_key",
+    "namespace_tables_for_schema",
+    "normalize_email",
+    "role_allows_action",
+    "validate_slug",
+]

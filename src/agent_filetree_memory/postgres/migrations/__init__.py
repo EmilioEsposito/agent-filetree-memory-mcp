@@ -14,10 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from alembic.config import Config
+from sqlalchemy import CheckConstraint, Column, MetaData, PrimaryKeyConstraint, String, Table
 
 from ..schema import DEFAULT_SCHEMA, tables_for_schema, validate_schema_name
 
 SCHEMA_ATTRIBUTE = "agent_filetree_memory_schema"
+CONSTRAINT_NAMESPACE_ATTRIBUTE = (
+    "agent_filetree_memory_control_plane_constraint_namespace"
+)
 
 
 def package_version_location() -> Path:
@@ -34,6 +38,7 @@ def configure_host_alembic(
     config: Config,
     *,
     schema: str = DEFAULT_SCHEMA,
+    constraint_namespace: str = "afm",
     append_version_location: bool = True,
 ) -> Config:
     """Configure a host ``Config`` for this independent revision branch.
@@ -44,7 +49,14 @@ def configure_host_alembic(
     """
 
     schema = validate_schema_name(schema)
+    from ...control_plane.namespace_store import namespace_tables_for_schema
+
+    namespace_tables_for_schema(
+        schema,
+        constraint_namespace=constraint_namespace,
+    )
     config.attributes[SCHEMA_ATTRIBUTE] = schema
+    config.attributes[CONSTRAINT_NAMESPACE_ATTRIBUTE] = constraint_namespace
     if append_version_location:
         location = str(package_version_location())
         current = config.get_main_option("version_locations", "").strip()
@@ -78,15 +90,59 @@ def schema_from_config(config: Config | Any) -> str:
     return validate_schema_name(value)
 
 
-def migration_metadata(schema: str = DEFAULT_SCHEMA):
+def constraint_namespace_from_config(config: Config | Any) -> str:
+    """Resolve the control-plane constraint prefix selected by the host."""
+
+    value = config.attributes.get(CONSTRAINT_NAMESPACE_ATTRIBUTE, "afm")
+    from ...control_plane.namespace_store import namespace_tables_for_schema
+
+    namespace_tables_for_schema(
+        schema_from_config(config),
+        constraint_namespace=value,
+    )
+    return value
+
+
+def migration_metadata(
+    schema: str = DEFAULT_SCHEMA,
+    *,
+    constraint_namespace: str = "afm",
+):
     """Return metadata for host Alembic autogenerate configuration."""
 
-    return tables_for_schema(validate_schema_name(schema)).metadata
+    schema = validate_schema_name(schema)
+    from ...control_plane.namespace_store import namespace_tables_for_schema
+
+    metadata = MetaData(schema=schema)
+    for source in (
+        tables_for_schema(schema).metadata,
+        namespace_tables_for_schema(
+            schema,
+            constraint_namespace=constraint_namespace,
+        ).metadata,
+    ):
+        for table in source.sorted_tables:
+            table.to_metadata(metadata, schema=schema)
+    Table(
+        "_afm_control_plane_installation",
+        metadata,
+        Column("revision", String(32), nullable=False),
+        Column("ownership", String(16), nullable=False),
+        PrimaryKeyConstraint("revision"),
+        CheckConstraint(
+            "ownership IN ('created', 'adopted')",
+            name="ck_afm_control_plane_installation_ownership",
+        ),
+        schema=schema,
+    )
+    return metadata
 
 
 __all__ = [
+    "CONSTRAINT_NAMESPACE_ATTRIBUTE",
     "SCHEMA_ATTRIBUTE",
     "configure_host_alembic",
+    "constraint_namespace_from_config",
     "migration_metadata",
     "package_version_location",
     "schema_from_config",
