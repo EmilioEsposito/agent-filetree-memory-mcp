@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11, <3.14"
 required-markers = [
     "platform_machine == 'arm64' and sys_platform == 'darwin'",
@@ -13,6 +13,7 @@ source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
 
 [package.optional-dependencies]
@@ -73,6 +74,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'all'", specifier = ">=2.0.51,<2.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'postgres'", specifier = ">=2.0.51,<2.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'web'", specifier = ">=2.0.51,<2.1" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'", specifier = ">=4.12,<5" },
     { name = "uvicorn", marker = "extra == 'all'", specifier = "==0.52.4" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = "==0.52.4" },
 ]

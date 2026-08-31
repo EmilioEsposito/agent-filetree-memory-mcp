@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "cryptography>=49.0.0,<51",
     "PyJWT[crypto]>=2.13.0,<3",
+    "typing_extensions>=4.12,<5; python_version < '3.12'",
 ]
 
 [project.urls]
