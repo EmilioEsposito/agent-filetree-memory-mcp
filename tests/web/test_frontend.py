@@ -33,6 +33,7 @@ def test_packaged_frontend_serves_config_html_and_safe_spa_fallback() -> None:
     assert missing_asset.status_code == 404
     assert missing_asset.headers["content-type"].startswith("application/json")
     assert config.json()["api_base_url"] == "../api/manage"
+    assert config.json()["mcp_base_url"] == "../mcp"
     assert config.json()["auth"]["mode"] == "session"
     assert config.headers["cache-control"] == "no-store"
     assert "default-src 'none'" in root.headers["content-security-policy"]
@@ -72,6 +73,15 @@ def test_oidc_config_accepts_public_metadata_without_secrets() -> None:
 def test_api_base_must_stay_same_origin(value: str) -> None:
     with pytest.raises(ValueError, match="same-origin relative URL"):
         ManagementFrontendConfig(api_base_url=value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["https://other.example.test/mcp", "//other.example.test/mcp", "mcp"],
+)
+def test_mcp_base_must_stay_same_origin(value: str) -> None:
+    with pytest.raises(ValueError, match="same-origin relative URL"):
+        ManagementFrontendConfig(mcp_base_url=value)
 
 
 def test_bundled_distribution_is_real_not_a_placeholder() -> None:

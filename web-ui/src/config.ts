@@ -11,6 +11,7 @@ export interface FrontendAuthConfig {
 
 export interface RuntimeConfig {
   api_base_url: string;
+  mcp_base_url: string;
   auth: FrontendAuthConfig;
   product_name: string;
 }
@@ -20,7 +21,12 @@ let runtimeConfig: Promise<RuntimeConfig> | null = null;
 
 function validate(config: RuntimeConfig): RuntimeConfig {
   if (!config || typeof config !== "object") throw new Error("UI configuration is invalid.");
-  if (!config.api_base_url || !config.auth || !config.product_name) {
+  if (
+    !config.api_base_url ||
+    !config.mcp_base_url ||
+    !config.auth ||
+    !config.product_name
+  ) {
     throw new Error("UI configuration is incomplete.");
   }
   if (!["none", "session", "oidc"].includes(config.auth.mode)) {
@@ -45,6 +51,21 @@ export function getRuntimeConfig(): Promise<RuntimeConfig> {
 export function apiUrl(config: RuntimeConfig, path: string): URL {
   const root = new URL(config.api_base_url.replace(/\/?$/, "/"), CONFIG_URL);
   return new URL(path.replace(/^\//, ""), root);
+}
+
+export function mcpConnectionUrl(
+  config: RuntimeConfig,
+  workspaceSlug: string,
+  agentSlug: string,
+): URL {
+  const root = new URL(
+    config.mcp_base_url.replace(/\/?$/, "/"),
+    CONFIG_URL,
+  );
+  return new URL(
+    `workspaces/${encodeURIComponent(workspaceSlug)}/agents/${encodeURIComponent(agentSlug)}`,
+    root,
+  );
 }
 
 export function uiRootUrl(): URL {

@@ -13,6 +13,7 @@ import {
   Bot,
   Check,
   ChevronRight,
+  Copy,
   File,
   FilePlus2,
   Files,
@@ -57,6 +58,7 @@ import {
   updateAgentAlias,
   updateMemberRole,
 } from "./api";
+import { mcpConnectionUrl } from "./config";
 import type {
   AgentSummary,
   ContentRole,
@@ -181,7 +183,7 @@ export default function AgentMemoryPage() {
 }
 
 function AgentMemoryManager() {
-  const { getToken } = useAuth();
+  const { config, getToken } = useAuth();
   const [searchParams, setSearchParams] = useBrowserSearchParams();
   const [me, setMe] = useState<CurrentPrincipal | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -214,6 +216,7 @@ function AgentMemoryManager() {
   const [editingAlias, setEditingAlias] = useState(false);
   const [aliasDraft, setAliasDraft] = useState("");
   const [selfGrant, setSelfGrant] = useState<SelfGrantRequest | null>(null);
+  const [mcpUrlCopied, setMcpUrlCopied] = useState(false);
 
   const [directory, setDirectory] = useState("/");
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
@@ -232,6 +235,17 @@ function AgentMemoryManager() {
     () => agents.find((item) => item.slug === selectedAgentSlug) ?? null,
     [agents, selectedAgentSlug],
   );
+  const selectedMcpUrl = useMemo(
+    () =>
+      config && selectedWorkspaceSlug && selectedAgent
+        ? mcpConnectionUrl(
+            config,
+            selectedWorkspaceSlug,
+            selectedAgent.slug,
+          ).toString()
+        : "",
+    [config, selectedAgent, selectedWorkspaceSlug],
+  );
   const workspaceAdmin = selectedWorkspace?.role === "owner" || selectedWorkspace?.role === "admin";
   const workspaceOwner = selectedWorkspace?.role === "owner";
   const canWrite = selectedAgent?.content_role === "editor" || selectedAgent?.content_role === "full_access";
@@ -239,6 +253,10 @@ function AgentMemoryManager() {
   const editorDirty = document
     ? editorContent !== document.content
     : creatingDocument && (editorContent.length > 0 || editorPath.length > 0);
+
+  useEffect(() => {
+    setMcpUrlCopied(false);
+  }, [selectedMcpUrl]);
 
   const updateUrl = useCallback(
     (workspace: string, agent: string, nextTab: Tab) => {
@@ -715,6 +733,20 @@ function AgentMemoryManager() {
     setPreview(false);
   }
 
+  async function copySelectedMcpUrl() {
+    if (!selectedMcpUrl) return;
+    setError("");
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard access is unavailable in this browser.");
+      }
+      await navigator.clipboard.writeText(selectedMcpUrl);
+      setMcpUrlCopied(true);
+    } catch (caught) {
+      fail(caught);
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-950">
@@ -867,6 +899,35 @@ function AgentMemoryManager() {
                       <RoleBadge tone={selectedAgent.content_role ? "green" : "gray"}>{contentRoleLabel(selectedAgent.content_role)}</RoleBadge>
                     </div>
                   </div>
+                  {selectedMcpUrl && (
+                    <div className="mt-4">
+                      <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">
+                        MCP connection URL
+                      </label>
+                      <div className="mt-1 flex flex-col gap-2 sm:flex-row">
+                        <input
+                          aria-label="MCP connection URL"
+                          className={`${INPUT} font-mono text-xs`}
+                          onFocus={(event) => event.currentTarget.select()}
+                          readOnly
+                          value={selectedMcpUrl}
+                        />
+                        <button
+                          aria-label="Copy MCP connection URL"
+                          className={`${BUTTON} shrink-0 bg-blue-600 text-white hover:bg-blue-700`}
+                          onClick={() => void copySelectedMcpUrl()}
+                          title="Copy MCP connection URL"
+                        >
+                          {mcpUrlCopied ? (
+                            <Check className="h-4 w-4" />
+                          ) : (
+                            <Copy className="h-4 w-4" />
+                          )}
+                          {mcpUrlCopied ? "Copied" : "Copy"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <nav className="flex gap-1 overflow-x-auto border-b border-gray-200 px-4 pt-2 dark:border-gray-800">

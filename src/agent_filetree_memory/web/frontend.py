@@ -71,6 +71,7 @@ class ManagementFrontendConfig:
     """Same-origin UI routing and authentication configuration."""
 
     api_base_url: str = "../api"
+    mcp_base_url: str = "../mcp"
     auth: FrontendAuthConfig = FrontendAuthConfig(mode="session")
     product_name: str = "Agent Filetree Memory"
 
@@ -81,6 +82,14 @@ class ManagementFrontendConfig:
             _relative_application_url(
                 self.api_base_url,
                 field="api_base_url",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "mcp_base_url",
+            _relative_application_url(
+                self.mcp_base_url,
+                field="mcp_base_url",
             ),
         )
         if (
@@ -156,6 +165,7 @@ def create_management_frontend(
         return JSONResponse(
             {
                 "api_base_url": resolved.api_base_url,
+                "mcp_base_url": resolved.mcp_base_url,
                 "auth": asdict(resolved.auth),
                 "product_name": resolved.product_name,
             },

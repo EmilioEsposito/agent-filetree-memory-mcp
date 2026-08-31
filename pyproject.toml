@@ -1,6 +1,6 @@
 [project]
 name = "agent-filetree-memory-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Encrypted, capability-scoped, versioned Markdown file-tree memory for MCP agents"
 readme = "README.md"
 license = "Apache-2.0"

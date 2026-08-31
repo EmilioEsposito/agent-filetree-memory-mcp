@@ -27,6 +27,11 @@ All paths are configurable, and the combined app may itself be mounted beneath
 a service prefix. The host owns schema creation, Alembic execution, database
 credentials, identity verification, key resolution, and TLS.
 
+For the selected workspace and agent, the UI derives the durable MCP connection
+URL from `ManagementFrontendConfig.mcp_base_url` and provides a copy button.
+The default `../mcp` value follows the recommended one-process layout while
+remaining relative to any host-selected service prefix.
+
 ## Browser authentication modes
 
 `FrontendAuthConfig` supports three deployment-neutral modes:
