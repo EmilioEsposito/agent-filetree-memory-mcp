@@ -38,6 +38,13 @@ server and retention janitor from a static PostgreSQL URL.
 See [docs/management-ui.md](docs/management-ui.md) for mounting the bundled
 administrative UI with a host-supplied identity dependency.
 
+The optional control plane is provider-neutral. Hosts inject verified
+principals, including a platform-administrator boolean, and may inject an
+external workspace-entitlement resolver. Platform administrators can inventory
+workspace metadata and create workspaces, but must explicitly take a workspace
+role before agent slugs become visible. Workspace administration and explicit
+agent management never imply content access or decryption.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).

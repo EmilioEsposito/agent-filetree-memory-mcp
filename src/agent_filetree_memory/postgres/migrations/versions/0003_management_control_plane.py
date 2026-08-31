@@ -198,7 +198,8 @@ def _validate_existing(schema: str) -> None:
             op.get_context().config
         ),
     )
-    for expected_table in tables.metadata.sorted_tables:
+    for table_name in _TABLE_NAMES:
+        expected_table = tables.metadata.tables[f"{schema}.{table_name}"]
         _validate_columns(inspector, schema, expected_table)
         _validate_primary_key(inspector, schema, expected_table)
         _validate_unique_constraints(inspector, schema, expected_table)
@@ -228,8 +229,11 @@ def upgrade() -> None:
                 op.get_context().config
             ),
         )
-        for table in tables.metadata.sorted_tables:
-            table.create(bind=op.get_bind(), checkfirst=False)
+        for table_name in _TABLE_NAMES:
+            tables.metadata.tables[f"{schema}.{table_name}"].create(
+                bind=op.get_bind(),
+                checkfirst=False,
+            )
         ownership = "created"
 
     marker_table = op.create_table(

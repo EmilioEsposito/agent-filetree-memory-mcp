@@ -50,15 +50,42 @@ registered for the exact externally visible `/ui/` URL.
 
 ## Authorization and decryption
 
+The host maps its verified identity into `ManagementPrincipal`. Only principals
+with `is_platform_admin=True` may create workspaces. A platform administrator
+may list workspace metadata globally, but cannot list agent slugs until they
+explicitly join the workspace or assign themselves its administrator role. That
+role assignment is audited and does not grant content access.
+
+Each workspace has two independent policies:
+
+- admission: `invite_only`, `all_authenticated`, or `external_entitlement`;
+- agent creation: `admins_only` or `all_members`.
+
+The external-entitlement mode calls a host-injected resolver with a
+provider-neutral workspace and verified-principal record. A missing resolver,
+resolver error, or any result other than the boolean `True` fails closed.
+Workspace membership remains owner, administrator, or member and supports
+invitations, removal, role changes, and atomic ownership transfer.
+
 Workspace owners and administrators can see agent existence and slugs. Agent
 management permission is independent from content permission, so they may
-rename agents, transfer ownership, and manage grants without reading memory.
+rename agents, transfer explicit agent management, and manage grants without
+reading memory. Explicit agent managers have the same agent-management
+authority without acquiring a workspace administrator role or content access.
 Creating an agent is the intentional exception: the creator receives an
-explicit full-content grant in the same transaction as the new namespace.
-That grant can later be changed or revoked like any other content grant.
+explicit manager row and a full-content grant in the same transaction as the
+new namespace, whether creation comes from the management API or an authorized
+MCP URL. Those rows can later be changed or revoked independently.
 The deployment decides whether an administrator may explicitly grant their own
 account reader/editor/full access. When enabled, the UI shows a warning before
-the API performs and audits that self-grant.
+the API performs and audits that self-grant. Confirmation is required by the
+API as well as the browser, so bypassing the UI cannot make the escalation
+implicit.
+
+The `afm_0004` migration adds workspace policies but intentionally does not
+backfill manager or content-grant rows for existing agents. A missing policy row
+uses the least-permissive `invite_only` and `admins_only` defaults until an
+administrator saves an explicit policy.
 
 The UI has no decryption shortcut. It invokes the same authorization-first
 `MemoryService` used by MCP, and encrypted content is decrypted only after the

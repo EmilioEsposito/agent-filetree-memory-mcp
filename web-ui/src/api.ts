@@ -8,6 +8,8 @@ import type {
   MemoryDocument,
   MemoryEntry,
   WorkspaceSummary,
+  WorkspaceAdmissionPolicy,
+  WorkspaceAgentCreationPolicy,
 } from "./types";
 import { apiUrl, getRuntimeConfig } from "./config";
 
@@ -73,11 +75,61 @@ export async function loadWorkspaces(getIdToken: TokenGetter) {
 export function createWorkspace(
   getIdToken: TokenGetter,
   slug: string,
+  admissionPolicy: WorkspaceAdmissionPolicy,
+  agentCreationPolicy: WorkspaceAgentCreationPolicy,
 ) {
   return memoryApi<WorkspaceSummary>(
     getIdToken,
     "/workspaces",
-    { method: "POST", body: JSON.stringify({ slug }) }
+    {
+      method: "POST",
+      body: JSON.stringify({
+        slug,
+        admission_policy: admissionPolicy,
+        agent_creation_policy: agentCreationPolicy,
+      }),
+    }
+  );
+}
+
+export function joinWorkspace(
+  getIdToken: TokenGetter,
+  workspace: string,
+) {
+  return memoryApi<{ role: "member" }>(
+    getIdToken,
+    `/workspaces/${segment(workspace)}/join`,
+    { method: "POST" },
+  );
+}
+
+export function assignPlatformAdminRole(
+  getIdToken: TokenGetter,
+  workspace: string,
+) {
+  return memoryApi<WorkspaceSummary>(
+    getIdToken,
+    `/workspaces/${segment(workspace)}/platform-admin-role`,
+    { method: "POST" },
+  );
+}
+
+export function updateWorkspacePolicy(
+  getIdToken: TokenGetter,
+  workspace: string,
+  admissionPolicy: WorkspaceAdmissionPolicy,
+  agentCreationPolicy: WorkspaceAgentCreationPolicy,
+) {
+  return memoryApi<WorkspaceSummary>(
+    getIdToken,
+    `/workspaces/${segment(workspace)}/policy`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        admission_policy: admissionPolicy,
+        agent_creation_policy: agentCreationPolicy,
+      }),
+    },
   );
 }
 
@@ -229,6 +281,7 @@ export function setContentAccess(
   agent: string,
   targetPrincipalId: string,
   contentRole: ContentRole | null,
+  confirmSelfGrant = false,
 ) {
   return memoryApi<{ updated: boolean }>(
     getIdToken,
@@ -238,6 +291,7 @@ export function setContentAccess(
       body: JSON.stringify({
         target_principal_id: targetPrincipalId,
         content_role: contentRole,
+        confirm_self_grant: confirmSelfGrant,
       }),
     }
   );
@@ -257,6 +311,22 @@ export function setAgentManager(
       method: "PUT",
       body: JSON.stringify({ target_principal_id: targetPrincipalId, enabled }),
     }
+  );
+}
+
+export function transferAgentManagement(
+  getIdToken: TokenGetter,
+  workspace: string,
+  agent: string,
+  targetPrincipalId: string,
+) {
+  return memoryApi<{ transferred: boolean }>(
+    getIdToken,
+    `/workspaces/${segment(workspace)}/agents/${segment(agent)}/transfer-management`,
+    {
+      method: "POST",
+      body: JSON.stringify({ target_principal_id: targetPrincipalId }),
+    },
   );
 }
 

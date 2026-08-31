@@ -37,10 +37,12 @@ import {
 
 import { AuthGuard, useAuth } from "./auth";
 import {
+  assignPlatformAdminRole,
   createAgent,
   createWorkspace,
   deleteMemoryDocument,
   inviteMember,
+  joinWorkspace,
   loadAgentAccess,
   loadAgents,
   loadAudit,
@@ -54,9 +56,11 @@ import {
   saveMemoryDocument,
   setAgentManager,
   setContentAccess,
+  transferAgentManagement,
   transferWorkspaceOwnership,
   updateAgentAlias,
   updateMemberRole,
+  updateWorkspacePolicy,
 } from "./api";
 import { mcpConnectionUrl } from "./config";
 import type {
@@ -68,6 +72,8 @@ import type {
   MemberAccess,
   MemoryDocument,
   MemoryEntry,
+  WorkspaceAdmissionPolicy,
+  WorkspaceAgentCreationPolicy,
   WorkspaceRole,
   WorkspaceSummary,
 } from "./types";
@@ -130,8 +136,21 @@ function contentRoleLabel(role: ContentRole | null): string {
   return "No content access";
 }
 
-function workspaceRoleLabel(role: WorkspaceRole): string {
+function workspaceRoleLabel(role: WorkspaceRole | null): string {
+  if (role === null) return "Platform view";
   return role[0].toUpperCase() + role.slice(1);
+}
+
+function admissionPolicyLabel(policy: WorkspaceAdmissionPolicy): string {
+  if (policy === "all_authenticated") return "All authenticated users";
+  if (policy === "external_entitlement") return "External entitlement";
+  return "Invite only";
+}
+
+function agentCreationPolicyLabel(
+  policy: WorkspaceAgentCreationPolicy,
+): string {
+  return policy === "all_members" ? "All members" : "Administrators only";
 }
 
 function principalLabel(member: MemberAccess): string {
@@ -209,6 +228,14 @@ function AgentMemoryManager() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [workspaceSlugInput, setWorkspaceSlugInput] = useState("");
+  const [newWorkspaceAdmission, setNewWorkspaceAdmission] =
+    useState<WorkspaceAdmissionPolicy>("invite_only");
+  const [newWorkspaceAgentCreation, setNewWorkspaceAgentCreation] =
+    useState<WorkspaceAgentCreationPolicy>("admins_only");
+  const [policyAdmissionDraft, setPolicyAdmissionDraft] =
+    useState<WorkspaceAdmissionPolicy>("invite_only");
+  const [policyAgentCreationDraft, setPolicyAgentCreationDraft] =
+    useState<WorkspaceAgentCreationPolicy>("admins_only");
   const [agentSlugInput, setAgentSlugInput] = useState("");
   const [agentAliasInput, setAgentAliasInput] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
@@ -248,6 +275,7 @@ function AgentMemoryManager() {
   );
   const workspaceAdmin = selectedWorkspace?.role === "owner" || selectedWorkspace?.role === "admin";
   const workspaceOwner = selectedWorkspace?.role === "owner";
+  const canCreateAgent = selectedWorkspace?.can_create_agents ?? false;
   const canWrite = selectedAgent?.content_role === "editor" || selectedAgent?.content_role === "full_access";
   const canDelete = selectedAgent?.content_role === "full_access";
   const editorDirty = document
@@ -257,6 +285,12 @@ function AgentMemoryManager() {
   useEffect(() => {
     setMcpUrlCopied(false);
   }, [selectedMcpUrl]);
+
+  useEffect(() => {
+    if (!selectedWorkspace) return;
+    setPolicyAdmissionDraft(selectedWorkspace.admission_policy);
+    setPolicyAgentCreationDraft(selectedWorkspace.agent_creation_policy);
+  }, [selectedWorkspace]);
 
   const updateUrl = useCallback(
     (workspace: string, agent: string, nextTab: Tab) => {
@@ -392,6 +426,17 @@ function AgentMemoryManager() {
     setError("");
     async function loadWorkspace() {
       try {
+        const currentWorkspace = workspaces.find(
+          (item) => item.slug === selectedWorkspaceSlug,
+        );
+        if (!currentWorkspace?.role) {
+          setAgents([]);
+          setSelectedAgentSlug("");
+          setMembers([]);
+          setInvitations([]);
+          setAudit([]);
+          return;
+        }
         const nextAgents = await loadAgents(getToken, selectedWorkspaceSlug);
         if (cancelled) return;
         setAgents(nextAgents);
@@ -400,7 +445,6 @@ function AgentMemoryManager() {
           ? requested!
           : nextAgents[0]?.slug ?? "";
         setSelectedAgentSlug(chosen);
-        const currentWorkspace = workspaces.find((item) => item.slug === selectedWorkspaceSlug);
         if (currentWorkspace?.role === "owner" || currentWorkspace?.role === "admin") {
           await Promise.all([
             refreshMembers(selectedWorkspaceSlug),
@@ -486,7 +530,12 @@ function AgentMemoryManager() {
     await runMutation(
       "workspace-create",
       async () => {
-        await createWorkspace(getToken, slug);
+        await createWorkspace(
+          getToken,
+          slug,
+          newWorkspaceAdmission,
+          newWorkspaceAgentCreation,
+        );
         await refreshWorkspaces();
         setWorkspaceSlugInput("");
         setSelectedWorkspaceSlug(slug);
@@ -512,13 +561,15 @@ function AgentMemoryManager() {
         await Promise.all([
           refreshAgents(selectedWorkspaceSlug),
           refreshWorkspaces(),
-          refreshAudit(selectedWorkspaceSlug),
+          workspaceAdmin
+            ? refreshAudit(selectedWorkspaceSlug)
+            : Promise.resolve(),
         ]);
         setAgentSlugInput("");
         setAgentAliasInput("");
         setSelectedAgentSlug(slug);
       },
-      `Agent ${slug} created with full access.`,
+      `Agent ${slug} created with full access and explicit management authority.`,
     ).catch(() => undefined);
   }
 
@@ -602,6 +653,7 @@ function AgentMemoryManager() {
           selectedAgentSlug,
           request.member.principal_id,
           request.role,
+          true,
         );
         await Promise.all([
           refreshAgentAccess(selectedWorkspaceSlug, selectedAgentSlug),
@@ -631,6 +683,86 @@ function AgentMemoryManager() {
         ]);
       },
       next ? `${principalLabel(member)} can now manage this agent.` : `${principalLabel(member)} no longer manages this agent.`,
+    ).catch(() => undefined);
+  }
+
+  async function handlePlatformAdminRole() {
+    if (!selectedWorkspaceSlug || !me?.is_platform_admin) return;
+    await runMutation(
+      "platform-admin-role",
+      async () => {
+        await assignPlatformAdminRole(getToken, selectedWorkspaceSlug);
+        await refreshWorkspaces();
+      },
+      "Workspace administrator role assigned. Memory content access was not granted.",
+    ).catch(() => undefined);
+  }
+
+  async function handleJoinWorkspace() {
+    if (!selectedWorkspaceSlug) return;
+    await runMutation(
+      "workspace-join",
+      async () => {
+        await joinWorkspace(getToken, selectedWorkspaceSlug);
+        await refreshWorkspaces();
+      },
+      `You joined ${selectedWorkspaceSlug} as a member.`,
+    ).catch(() => undefined);
+  }
+
+  async function handlePolicySave() {
+    if (!selectedWorkspaceSlug || !workspaceAdmin) return;
+    await runMutation(
+      "workspace-policy",
+      async () => {
+        await updateWorkspacePolicy(
+          getToken,
+          selectedWorkspaceSlug,
+          policyAdmissionDraft,
+          policyAgentCreationDraft,
+        );
+        await Promise.all([
+          refreshWorkspaces(),
+          refreshAudit(selectedWorkspaceSlug),
+        ]);
+      },
+      "Workspace authorization policy updated.",
+    ).catch(() => undefined);
+  }
+
+  async function handleManagerTransfer(member: MemberAccess) {
+    if (!selectedWorkspaceSlug || !selectedAgentSlug) return;
+    if (
+      !window.confirm(
+        `Transfer explicit management of this agent to ${principalLabel(member)}?`,
+      )
+    ) {
+      return;
+    }
+    await runMutation(
+      `manager-transfer-${member.principal_id}`,
+      async () => {
+        await transferAgentManagement(
+          getToken,
+          selectedWorkspaceSlug,
+          selectedAgentSlug,
+          member.principal_id,
+        );
+        await Promise.all([
+          refreshAgents(selectedWorkspaceSlug),
+          workspaceAdmin
+            ? Promise.all([
+                refreshAgentAccess(selectedWorkspaceSlug, selectedAgentSlug),
+                refreshAudit(selectedWorkspaceSlug),
+              ])
+            : Promise.resolve(),
+        ]);
+        if (!workspaceAdmin) {
+          setAgentAccess([]);
+          setTab("memory");
+        }
+      },
+      `Agent management transferred to ${principalLabel(member)}.`,
     ).catch(() => undefined);
   }
 
@@ -772,7 +904,10 @@ function AgentMemoryManager() {
           </div>
           {me && (
             <div className="text-left text-sm sm:text-right">
-              <p className="font-medium">{me.display_name}</p>
+              <p className="flex items-center gap-2 font-medium sm:justify-end">
+                {me.display_name}
+                {me.is_platform_admin && <RoleBadge tone="blue">Platform admin</RoleBadge>}
+              </p>
               <p className="text-gray-500 dark:text-gray-400">{me.email}</p>
             </div>
           )}
@@ -820,15 +955,72 @@ function AgentMemoryManager() {
               ))}
               {workspaces.length === 0 && <p className="p-3 text-sm text-gray-500">No workspaces yet.</p>}
             </div>
-            <div className="border-t border-gray-200 p-3 dark:border-gray-800">
-              <label className="mb-1 block text-xs font-medium text-gray-500">New workspace slug</label>
-              <div className="flex gap-2">
-                <input className={INPUT} value={workspaceSlugInput} onChange={(event) => setWorkspaceSlugInput(event.target.value)} placeholder="my-team" />
-                <button aria-label="Create workspace" className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`} disabled={!workspaceSlugInput.trim() || busy === "workspace-create"} onClick={() => void handleCreateWorkspace()}>
-                  {busy === "workspace-create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            {selectedWorkspace && (
+              <div className="space-y-3 border-t border-gray-200 p-3 text-xs dark:border-gray-800">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-gray-500">Your role</span>
+                  <RoleBadge tone={selectedWorkspace.role ? "blue" : "gray"}>{workspaceRoleLabel(selectedWorkspace.role)}</RoleBadge>
+                </div>
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-gray-500">Admission</span>
+                  <span className="text-right font-medium">{admissionPolicyLabel(selectedWorkspace.admission_policy)}</span>
+                </div>
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-gray-500">Agent creation</span>
+                  <span className="text-right font-medium">{agentCreationPolicyLabel(selectedWorkspace.agent_creation_policy)}</span>
+                </div>
+                {!selectedWorkspace.role && (
+                  <div className="space-y-2 border-t border-gray-200 pt-3 dark:border-gray-800">
+                    {me?.is_platform_admin && (
+                      <button className={`${BUTTON} w-full bg-blue-600 text-white hover:bg-blue-700`} disabled={busy === "platform-admin-role"} onClick={() => void handlePlatformAdminRole()}>
+                        {busy === "platform-admin-role" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />} Join as administrator
+                      </button>
+                    )}
+                    {selectedWorkspace.admission_policy !== "invite_only" && (
+                      <button className={`${BUTTON} w-full bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200`} disabled={busy === "workspace-join"} onClick={() => void handleJoinWorkspace()}>
+                        {busy === "workspace-join" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} Join as member
+                      </button>
+                    )}
+                  </div>
+                )}
+                {workspaceAdmin && (
+                  <div className="space-y-2 border-t border-gray-200 pt-3 dark:border-gray-800">
+                    <label className="block font-medium text-gray-500">Admission policy</label>
+                    <select className={INPUT} value={policyAdmissionDraft} onChange={(event) => setPolicyAdmissionDraft(event.target.value as WorkspaceAdmissionPolicy)}>
+                      <option value="invite_only">Invite only</option>
+                      <option value="all_authenticated">All authenticated users</option>
+                      <option value="external_entitlement">External entitlement</option>
+                    </select>
+                    <label className="block font-medium text-gray-500">Who may create agents</label>
+                    <select className={INPUT} value={policyAgentCreationDraft} onChange={(event) => setPolicyAgentCreationDraft(event.target.value as WorkspaceAgentCreationPolicy)}>
+                      <option value="admins_only">Administrators only</option>
+                      <option value="all_members">All members</option>
+                    </select>
+                    <button className={`${BUTTON} w-full bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200`} disabled={busy === "workspace-policy"} onClick={() => void handlePolicySave()}>
+                      {busy === "workspace-policy" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save policies
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {me?.is_platform_admin && (
+              <div className="space-y-2 border-t border-gray-200 p-3 dark:border-gray-800">
+                <label className="block text-xs font-medium text-gray-500">Create workspace</label>
+                <input className={INPUT} value={workspaceSlugInput} onChange={(event) => setWorkspaceSlugInput(event.target.value)} placeholder="workspace-slug" />
+                <select aria-label="New workspace admission policy" className={INPUT} value={newWorkspaceAdmission} onChange={(event) => setNewWorkspaceAdmission(event.target.value as WorkspaceAdmissionPolicy)}>
+                  <option value="invite_only">Invite only</option>
+                  <option value="all_authenticated">All authenticated users</option>
+                  <option value="external_entitlement">External entitlement</option>
+                </select>
+                <select aria-label="New workspace agent creation policy" className={INPUT} value={newWorkspaceAgentCreation} onChange={(event) => setNewWorkspaceAgentCreation(event.target.value as WorkspaceAgentCreationPolicy)}>
+                  <option value="admins_only">Administrators create agents</option>
+                  <option value="all_members">All members create agents</option>
+                </select>
+                <button aria-label="Create workspace" className={`${BUTTON} w-full bg-blue-600 text-white hover:bg-blue-700`} disabled={!workspaceSlugInput.trim() || busy === "workspace-create"} onClick={() => void handleCreateWorkspace()}>
+                  {busy === "workspace-create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Create workspace
                 </button>
               </div>
-            </div>
+            )}
           </aside>
 
           <aside className={`${PANEL} h-fit overflow-hidden`}>
@@ -858,7 +1050,7 @@ function AgentMemoryManager() {
               {selectedWorkspaceSlug && agents.length === 0 && <p className="p-3 text-sm text-gray-500">No visible agents.</p>}
               {!selectedWorkspaceSlug && <p className="p-3 text-sm text-gray-500">Select a workspace.</p>}
             </div>
-            {workspaceAdmin && (
+            {canCreateAgent && (
               <div className="space-y-2 border-t border-gray-200 p-3 dark:border-gray-800">
                 <label className="block text-xs font-medium text-gray-500">Create agent</label>
                 <input className={INPUT} value={agentSlugInput} onChange={(event) => setAgentSlugInput(event.target.value)} placeholder="agent-slug" />
@@ -866,13 +1058,18 @@ function AgentMemoryManager() {
                 <button className={`${BUTTON} w-full bg-blue-600 text-white hover:bg-blue-700`} disabled={!agentSlugInput.trim() || busy === "agent-create"} onClick={() => void handleCreateAgent()}>
                   {busy === "agent-create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Create agent
                 </button>
+                <p className="text-xs text-gray-500">You will receive explicit management authority and full memory access.</p>
               </div>
             )}
           </aside>
 
           <section className={`${PANEL} min-h-[640px] overflow-hidden`}>
             {!selectedAgent ? (
-              <EmptyState icon={<Bot className="h-7 w-7" />} title="Select an agent" body="Choose an agent namespace, or create one if you administer this workspace." />
+              <EmptyState
+                icon={selectedWorkspace && !selectedWorkspace.role ? <LockKeyhole className="h-7 w-7" /> : <Bot className="h-7 w-7" />}
+                title={selectedWorkspace && !selectedWorkspace.role ? "Join this workspace to see agents" : "Select an agent"}
+                body={selectedWorkspace && !selectedWorkspace.role ? "Platform-wide inventory includes workspace metadata only. Agent names remain hidden until you explicitly join or assign yourself a workspace role." : "Choose an agent namespace, or create one when workspace policy allows it."}
+              />
             ) : (
               <>
                 <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
@@ -980,6 +1177,7 @@ function AgentMemoryManager() {
                     busy={busy}
                     onRole={(member, role) => void applyContentRole(member, role)}
                     onManager={(member, next) => void handleManagerChange(member, next)}
+                    onTransfer={(member) => void handleManagerTransfer(member)}
                   />
                 )}
 
@@ -1192,7 +1390,7 @@ function EmptyStateWithAction({ icon, title, body, children }: { icon: ReactNode
   );
 }
 
-function AccessPanel({ members, currentPrincipalId, currentWorkspaceRole, allowAdminSelfGrant, busy, onRole, onManager }: {
+function AccessPanel({ members, currentPrincipalId, currentWorkspaceRole, allowAdminSelfGrant, busy, onRole, onManager, onTransfer }: {
   members: MemberAccess[];
   currentPrincipalId: string;
   currentWorkspaceRole: WorkspaceRole;
@@ -1200,6 +1398,7 @@ function AccessPanel({ members, currentPrincipalId, currentWorkspaceRole, allowA
   busy: string;
   onRole: (member: MemberAccess, role: ContentRole | null) => void;
   onManager: (member: MemberAccess, next: boolean) => void;
+  onTransfer: (member: MemberAccess) => void;
 }) {
   const workspaceAdmin = currentWorkspaceRole === "owner" || currentWorkspaceRole === "admin";
   return (
@@ -1208,8 +1407,8 @@ function AccessPanel({ members, currentPrincipalId, currentWorkspaceRole, allowA
         <div className="flex gap-3"><Shield className="h-5 w-5 shrink-0" /><div><p className="font-semibold">Management and memory are independent</p><p className="mt-1">A manager can rename this agent and administer its access list without reading or writing memory. Content roles are always explicit.</p></div></div>
       </div>
       <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
-        <table className="w-full min-w-[700px] text-left text-sm">
-          <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-950/50"><tr><th className="px-4 py-3">Member</th><th className="px-4 py-3">Workspace</th><th className="px-4 py-3">Manage agent</th><th className="px-4 py-3">Memory content</th></tr></thead>
+        <table className="w-full min-w-[780px] text-left text-sm">
+          <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-950/50"><tr><th className="px-4 py-3">Member</th><th className="px-4 py-3">Workspace</th><th className="px-4 py-3">Manage agent</th><th className="px-4 py-3">Memory content</th><th className="px-4 py-3 text-right">Transfer</th></tr></thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
             {members.map((member) => {
               const self = member.principal_id === currentPrincipalId;
@@ -1220,9 +1419,11 @@ function AccessPanel({ members, currentPrincipalId, currentWorkspaceRole, allowA
                   <td className="px-4 py-3"><p className="font-medium">{principalLabel(member)} {self && <span className="text-xs text-gray-400">(you)</span>}</p><p className="text-xs text-gray-500">{member.email || member.principal_id}</p></td>
                   <td className="px-4 py-3"><RoleBadge>{workspaceRoleLabel(member.workspace_role)}</RoleBadge></td>
                   <td className="px-4 py-3">
-                    {inherentManager ? <span className="text-xs text-gray-500">Included in workspace role</span> : workspaceAdmin ? (
+                    {inherentManager ? <span className="text-xs text-gray-500">Included in workspace role</span> : self ? (
+                      <span className="text-xs text-gray-500">{member.explicit_manager ? "Explicit manager" : "Not manager"}</span>
+                    ) : (
                       <label className="inline-flex items-center gap-2"><input type="checkbox" checked={member.explicit_manager} disabled={busy === `manager-${member.principal_id}`} onChange={(event) => onManager(member, event.target.checked)} /><span>{member.explicit_manager ? "Manager" : "Not manager"}</span></label>
-                    ) : <span className="text-xs text-gray-500">{member.explicit_manager ? "Explicit manager" : "Not manager"}</span>}
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <select className={INPUT} value={member.content_role ?? ""} disabled={busy === `content-${member.principal_id}`} onChange={(event) => onRole(member, (event.target.value || null) as ContentRole | null)}>
@@ -1232,6 +1433,13 @@ function AccessPanel({ members, currentPrincipalId, currentWorkspaceRole, allowA
                       <option value="full_access" disabled={self && !canChooseSelfRole}>Full access</option>
                     </select>
                     {self && !canChooseSelfRole && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Self-grant is disabled. You may still revoke existing access.</p>}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {!self && (
+                      <button className={`${BUTTON} bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200`} disabled={busy === `manager-transfer-${member.principal_id}`} onClick={() => onTransfer(member)} title={workspaceAdmin ? "Assign explicit management; your workspace role remains unchanged" : "Transfer your explicit management authority"}>
+                        <UserCog className="h-4 w-4" /> Transfer
+                      </button>
+                    )}
                   </td>
                 </tr>
               );

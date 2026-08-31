@@ -101,6 +101,20 @@ and manage metadata without decrypting content. If deployment policy enables
 administrator self-grants, the management API requires an explicit confirmation
 and records the grant as a content-free audit event.
 
+Platform administration is a host-verified capability rather than a stored
+content role. Platform administrators alone may create workspaces and may list
+workspace metadata across the deployment. They cannot enumerate a workspace's
+agent slugs until they explicitly become a member or assign themselves its
+administrator role, and that role still confers no content permission.
+
+Workspace admission is independently configured as invite-only, open to every
+authenticated principal, or delegated to an injected external-entitlement
+resolver. Agent creation is independently limited to workspace administrators
+or opened to all members. When an authorized principal creates a missing agent
+through the API or its MCP URL, the profile, explicit manager row, full-content
+grant, and content-free audit events commit atomically. Existing profiles are
+never silently backfilled on reconnect.
+
 There is intentionally no universal `agent_name` or `agent_profile_id` memory
 tool argument. Names are mutable and model-controlled arguments are not an
 authorization boundary. The URL aliases are supplied by the human while

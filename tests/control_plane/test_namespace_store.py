@@ -11,20 +11,24 @@ import os
 import pytest
 from agent_filetree_memory.domain.errors import AuthorizationDenied
 from agent_filetree_memory.domain.models import MemoryAction
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, select, text, update
 from agent_filetree_memory.postgres import PostgresRuntime
 
 from agent_filetree_memory.control_plane.namespace_store import (
     AgentGrantRole,
     NamespaceStore,
+    WorkspaceAdmissionPolicy,
+    WorkspaceAgentCreationPolicy,
     WorkspaceRole,
     _record_integrity_tag,
     agent_grants,
+    agent_managers,
     agent_profiles,
     namespace_metadata,
     role_allows_action,
     validate_slug,
     workspace_members,
+    workspace_policies,
     workspaces,
 )
 
@@ -74,6 +78,7 @@ def test_namespace_metadata_is_schema_bound_and_separates_identity_metadata() ->
     expected = {
         "workspaces",
         "workspace_members",
+        "workspace_policies",
         "agent_profiles",
         "agent_grants",
         "agent_managers",
@@ -218,6 +223,53 @@ async def _delete_workspace(session_factory, workspace_slug: str) -> None:
         )
 
 
+async def _seed_workspace(
+    session_factory,
+    *,
+    workspace_slug: str,
+    principal_id: str,
+    role: WorkspaceRole = WorkspaceRole.OWNER,
+    agent_creation_policy: WorkspaceAgentCreationPolicy = (
+        WorkspaceAgentCreationPolicy.ADMINS_ONLY
+    ),
+) -> str:
+    """Create the control-plane state that the MCP path may never create."""
+
+    workspace_id = uuid4().hex
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            workspaces.insert().values(
+                **_signed_values(
+                    "workspace",
+                    workspace_id=workspace_id,
+                    slug=workspace_slug,
+                    created_by_principal_id=principal_id,
+                )
+            )
+        )
+        await session.execute(
+            workspace_members.insert().values(
+                **_signed_values(
+                    "workspace_member",
+                    workspace_id=workspace_id,
+                    principal_id=principal_id,
+                    role=role.value,
+                )
+            )
+        )
+        await session.execute(
+            workspace_policies.insert().values(
+                **_signed_values(
+                    "workspace_policy",
+                    workspace_id=workspace_id,
+                    admission_policy=WorkspaceAdmissionPolicy.INVITE_ONLY.value,
+                    agent_creation_policy=agent_creation_policy.value,
+                )
+            )
+        )
+    return workspace_id
+
+
 @pytest.mark.live
 async def test_live_membership_and_agent_grants_fail_closed() -> None:
     suffix = uuid4().hex
@@ -228,6 +280,11 @@ async def test_live_membership_and_agent_grants_fail_closed() -> None:
 
     async with _live_store() as (store, session_factory):
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=owner,
+            )
             owner_binding = await store.resolve_or_create(
                 workspace_slug=workspace_slug,
                 agent_slug=agent_slug,
@@ -307,6 +364,11 @@ async def test_live_member_cannot_create_a_missing_agent() -> None:
 
     async with _live_store() as (store, session_factory):
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=owner,
+            )
             owner_binding = await store.resolve_or_create(
                 workspace_slug=workspace_slug,
                 agent_slug=existing_agent_slug,
@@ -371,10 +433,61 @@ async def test_live_member_cannot_create_a_missing_agent() -> None:
 
 
 @pytest.mark.live
-async def test_live_namespace_creation_limits_are_enforced() -> None:
+async def test_live_all_members_policy_allows_atomic_mcp_agent_creation() -> None:
+    suffix = uuid4().hex
+    workspace_slug = f"all-members-{suffix}"
+    agent_slug = f"agent-{suffix}"
+    owner = f"oidc:tenant:owner-{suffix}"
+    member = f"oidc:tenant:member-{suffix}"
+
+    async with _live_store() as (store, session_factory):
+        try:
+            workspace_id = await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=owner,
+                agent_creation_policy=(
+                    WorkspaceAgentCreationPolicy.ALL_MEMBERS
+                ),
+            )
+            async with session_factory() as session, session.begin():
+                await session.execute(
+                    workspace_members.insert().values(
+                        **_signed_values(
+                            "workspace_member",
+                            workspace_id=workspace_id,
+                            principal_id=member,
+                            role=WorkspaceRole.MEMBER.value,
+                        )
+                    )
+                )
+
+            binding = await store.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                principal_id=member,
+                action=MemoryAction.DELETE,
+            )
+            assert binding.workspace_role is WorkspaceRole.MEMBER
+            assert binding.agent_role is AgentGrantRole.ADMIN
+            async with session_factory() as session:
+                manager = (
+                    await session.execute(
+                        select(agent_managers.c.principal_id).where(
+                            agent_managers.c.agent_profile_id
+                            == binding.agent_profile_id
+                        )
+                    )
+                ).scalar_one()
+            assert manager == member
+        finally:
+            await _delete_workspace(session_factory, workspace_slug)
+
+
+@pytest.mark.live
+async def test_live_agent_creation_limit_is_enforced() -> None:
     suffix = uuid4().hex
     workspace_slug = f"bounded-{suffix}"
-    second_workspace_slug = f"bounded-second-{suffix}"
     agent_slug = f"agent-{suffix}"
     second_agent_slug = f"agent-second-{suffix}"
     principal = f"oidc:tenant:principal-{suffix}"
@@ -383,10 +496,14 @@ async def test_live_namespace_creation_limits_are_enforced() -> None:
         store = NamespaceStore(
             session_factory,
             integrity_key=_INTEGRITY_KEY,
-            max_workspaces_per_principal=1,
             max_agents_per_workspace=1,
         )
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=principal,
+            )
             first = await store.resolve_or_create(
                 workspace_slug=workspace_slug,
                 agent_slug=agent_slug,
@@ -408,71 +525,33 @@ async def test_live_namespace_creation_limits_are_enforced() -> None:
                     principal_id=principal,
                     action=MemoryAction.READ,
                 )
-            with pytest.raises(AuthorizationDenied):
-                await store.resolve_or_create(
-                    workspace_slug=second_workspace_slug,
-                    agent_slug=agent_slug,
-                    principal_id=principal,
-                    action=MemoryAction.READ,
-                )
         finally:
             await _delete_workspace(session_factory, workspace_slug)
-            await _delete_workspace(session_factory, second_workspace_slug)
 
 
 @pytest.mark.live
-async def test_live_workspace_limit_is_atomic_across_replicas() -> None:
+async def test_live_mcp_path_never_claims_or_creates_a_workspace() -> None:
     suffix = uuid4().hex
-    workspace_slugs = (
-        f"atomic-first-{suffix}",
-        f"atomic-second-{suffix}",
-    )
+    workspace_slug = f"missing-{suffix}"
     principal = f"oidc:tenant:principal-{suffix}"
 
-    async with _live_store() as (_store, session_factory):
-        try:
-            results = await asyncio.gather(
-                *(
-                    NamespaceStore(
-                        session_factory,
-                        integrity_key=_INTEGRITY_KEY,
-                        max_workspaces_per_principal=1,
-                    ).resolve_or_create(
-                        workspace_slug=workspace_slug,
-                        agent_slug=f"agent-{suffix}",
-                        principal_id=principal,
-                        action=MemoryAction.READ,
-                    )
-                    for workspace_slug in workspace_slugs
-                ),
-                return_exceptions=True,
+    async with _live_store() as (store, session_factory):
+        with pytest.raises(AuthorizationDenied):
+            await store.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=f"agent-{suffix}",
+                principal_id=principal,
+                action=MemoryAction.READ,
             )
-            successes = [
-                result
-                for result in results
-                if not isinstance(result, BaseException)
-            ]
-            failures = [
-                result for result in results if isinstance(result, BaseException)
-            ]
-            assert len(successes) == 1
-            assert len(failures) == 1
-            assert isinstance(failures[0], AuthorizationDenied)
 
-            async with session_factory() as session:
-                workspace_count = (
-                    await session.execute(
-                        select(func.count())
-                        .select_from(workspaces)
-                        .where(
-                            workspaces.c.created_by_principal_id == principal
-                        )
+        async with session_factory() as session:
+            assert (
+                await session.execute(
+                    select(workspaces.c.workspace_id).where(
+                        workspaces.c.slug == workspace_slug
                     )
-                ).scalar_one()
-            assert workspace_count == 1
-        finally:
-            for workspace_slug in workspace_slugs:
-                await _delete_workspace(session_factory, workspace_slug)
+                )
+            ).scalar_one_or_none() is None
 
 
 @pytest.mark.live
@@ -485,6 +564,11 @@ async def test_live_workspace_owner_cannot_decrypt_without_agent_grant() -> None
 
     async with _live_store() as (store, session_factory):
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=creator,
+            )
             creator_binding = await store.resolve_or_create(
                 workspace_slug=workspace_slug,
                 agent_slug=agent_slug,
@@ -552,6 +636,11 @@ async def test_live_forged_membership_and_grant_tags_fail_closed() -> None:
 
     async with _live_store() as (store, session_factory):
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=owner,
+            )
             binding = await store.resolve_or_create(
                 workspace_slug=workspace_slug,
                 agent_slug=agent_slug,
@@ -631,6 +720,11 @@ async def test_live_valid_tags_cannot_be_copied_to_another_principal() -> None:
 
     async with _live_store() as (store, session_factory):
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=owner,
+            )
             binding = await store.resolve_or_create(
                 workspace_slug=workspace_slug,
                 agent_slug=agent_slug,
@@ -705,6 +799,11 @@ async def test_live_authorization_rows_reject_a_different_integrity_key() -> Non
 
     async with _live_store() as (store, session_factory):
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=principal,
+            )
             await store.resolve_or_create(
                 workspace_slug=workspace_slug,
                 agent_slug=agent_slug,
@@ -744,6 +843,11 @@ async def test_live_tampered_authorization_rows_fail_closed(
 
     async with _live_store() as (store, session_factory):
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=principal,
+            )
             binding = await store.resolve_or_create(
                 workspace_slug=workspace_slug,
                 agent_slug=agent_slug,
@@ -803,6 +907,11 @@ async def test_live_concurrent_resolve_or_create_is_singleton() -> None:
 
     async with _live_store() as (store, session_factory):
         try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=principal,
+            )
             first, second = await asyncio.gather(
                 store.resolve_or_create(
                     workspace_slug=workspace_slug,
@@ -830,7 +939,7 @@ async def test_live_concurrent_resolve_or_create_is_singleton() -> None:
 
 
 @pytest.mark.live
-async def test_live_concurrent_workspace_claim_has_one_owner() -> None:
+async def test_live_concurrent_agent_claim_has_one_creator_grant_and_manager() -> None:
     suffix = uuid4().hex
     workspace_slug = f"claim-{suffix}"
     agent_slug = f"agent-{suffix}"
@@ -841,6 +950,22 @@ async def test_live_concurrent_workspace_claim_has_one_owner() -> None:
 
     async with _live_store() as (_store, session_factory):
         try:
+            workspace_id = await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=principals[0],
+            )
+            async with session_factory() as session, session.begin():
+                await session.execute(
+                    workspace_members.insert().values(
+                        **_signed_values(
+                            "workspace_member",
+                            workspace_id=workspace_id,
+                            principal_id=principals[1],
+                            role=WorkspaceRole.ADMIN.value,
+                        )
+                    )
+                )
             results = await asyncio.gather(
                 *(
                     NamespaceStore(
@@ -869,18 +994,34 @@ async def test_live_concurrent_workspace_claim_has_one_owner() -> None:
             assert isinstance(failures[0], AuthorizationDenied)
 
             async with session_factory() as session:
-                roles = (
+                profile_id = (
                     await session.execute(
-                        select(workspace_members.c.role)
-                        .join(
-                            workspaces,
-                            workspaces.c.workspace_id
-                            == workspace_members.c.workspace_id,
+                        select(agent_profiles.c.agent_profile_id).where(
+                            agent_profiles.c.workspace_id == workspace_id,
+                            agent_profiles.c.slug == agent_slug,
                         )
-                        .where(workspaces.c.slug == workspace_slug)
                     )
-                ).scalars().all()
-            assert roles == [WorkspaceRole.OWNER.value]
-            assert successes[0].principal_id in principals
+                ).scalar_one()
+                grant_principals = set(
+                    (
+                        await session.execute(
+                            select(agent_grants.c.principal_id).where(
+                                agent_grants.c.agent_profile_id == profile_id
+                            )
+                        )
+                    ).scalars()
+                )
+                manager_principals = set(
+                    (
+                        await session.execute(
+                            select(agent_managers.c.principal_id).where(
+                                agent_managers.c.agent_profile_id == profile_id
+                            )
+                        )
+                    ).scalars()
+                )
+            assert grant_principals == manager_principals == {
+                successes[0].principal_id
+            }
         finally:
             await _delete_workspace(session_factory, workspace_slug)

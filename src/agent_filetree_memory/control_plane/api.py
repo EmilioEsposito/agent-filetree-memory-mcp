@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -28,11 +28,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from .management_store import (
     ManagementConflict,
     ManagementStore,
+    SelfGrantConfirmationRequired,
     SelfGrantDisabled,
     content_role_from_name,
     content_role_name,
 )
-from .namespace_store import NamespaceStore, WorkspaceRole
+from .namespace_store import (
+    NamespaceStore,
+    WorkspaceAdmissionPolicy,
+    WorkspaceAgentCreationPolicy,
+    WorkspaceRole,
+    validate_slug,
+)
 
 _INVOCATION_TTL = timedelta(seconds=60)
 _MANAGEMENT_ISSUER = "agent-filetree-memory-manager"
@@ -44,6 +51,33 @@ class ManagementPrincipal:
     principal_id: str
     email: str
     display_name: str
+    is_platform_admin: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultWorkspace:
+    """Trusted host configuration for a lazily created default workspace."""
+
+    slug: str
+    admission_policy: WorkspaceAdmissionPolicy
+    agent_creation_policy: WorkspaceAgentCreationPolicy
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "slug",
+            validate_slug(self.slug, field="workspace_slug"),
+        )
+        object.__setattr__(
+            self,
+            "admission_policy",
+            WorkspaceAdmissionPolicy(self.admission_policy),
+        )
+        object.__setattr__(
+            self,
+            "agent_creation_policy",
+            WorkspaceAgentCreationPolicy(self.agent_creation_policy),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +92,20 @@ class LocalManagementScope:
 class CreateWorkspaceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     slug: str = Field(min_length=1, max_length=63)
+    admission_policy: Literal[
+        "invite_only", "all_authenticated", "external_entitlement"
+    ] = "invite_only"
+    agent_creation_policy: Literal["admins_only", "all_members"] = (
+        "admins_only"
+    )
+
+
+class UpdateWorkspacePolicyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    admission_policy: Literal[
+        "invite_only", "all_authenticated", "external_entitlement"
+    ]
+    agent_creation_policy: Literal["admins_only", "all_members"]
 
 
 class CreateAgentRequest(BaseModel):
@@ -88,6 +136,7 @@ class UpdateMemberRoleRequest(PrincipalTargetRequest):
 
 class SetContentAccessRequest(PrincipalTargetRequest):
     content_role: Literal["reader", "editor", "full_access"] | None
+    confirm_self_grant: bool = False
 
 
 class SetManagerRequest(PrincipalTargetRequest):
@@ -121,7 +170,10 @@ def _workspace_payload(item) -> dict[str, object]:
     return {
         "workspace_id": item.workspace_id,
         "slug": item.slug,
-        "role": item.role.value,
+        "role": item.role.value if item.role is not None else None,
+        "admission_policy": item.admission_policy.value,
+        "agent_creation_policy": item.agent_creation_policy.value,
+        "can_create_agents": item.can_create_agents,
         "agent_count": item.agent_count,
         "member_count": item.member_count,
         "created_at": item.created_at.isoformat(),
@@ -158,6 +210,7 @@ def create_management_api(
     principal_dependency: Callable[..., Any],
     allow_admin_self_grant: bool,
     local_scope: LocalManagementScope | None = None,
+    default_workspaces: Sequence[DefaultWorkspace] = (),
 ) -> FastAPI:
     """Build the management API around one host-supplied identity dependency."""
 
@@ -167,6 +220,12 @@ def create_management_api(
         local_scope, LocalManagementScope
     ):
         raise TypeError("local_scope must be LocalManagementScope")
+    if any(
+        not isinstance(item, DefaultWorkspace)
+        for item in default_workspaces
+    ):
+        raise TypeError("default_workspaces must contain DefaultWorkspace values")
+    default_workspaces = tuple(default_workspaces)
 
     app = FastAPI(
         title="Agent Filetree Memory API",
@@ -180,11 +239,33 @@ def create_management_api(
     ) -> ManagementPrincipal:
         if not isinstance(principal, ManagementPrincipal):
             raise AuthorizationDenied("management authentication is invalid")
-        await management_store.register_principal(
+        if not isinstance(principal.is_platform_admin, bool):
+            raise AuthorizationDenied("management authentication is invalid")
+        profile = await management_store.register_principal(
             principal_id=principal.principal_id,
             email=principal.email,
             display_name=principal.display_name,
         )
+        for workspace in default_workspaces:
+            if principal.is_platform_admin:
+                await management_store.ensure_default_workspace(
+                    principal_id=principal.principal_id,
+                    workspace_slug=workspace.slug,
+                    admission_policy=workspace.admission_policy,
+                    agent_creation_policy=workspace.agent_creation_policy,
+                    is_platform_admin=True,
+                )
+            try:
+                await management_store.ensure_workspace_admission(
+                    principal_id=profile.principal_id,
+                    email=profile.email,
+                    display_name=profile.display_name,
+                    workspace_slug=workspace.slug,
+                )
+            except AuthorizationDenied:
+                # A missing, invite-only, or external-entitlement default must
+                # not turn authentication into implicit membership.
+                pass
         if local_scope is not None:
             await management_store.ensure_local_scope(
                 principal_id=principal.principal_id,
@@ -198,6 +279,12 @@ def create_management_api(
 
     @app.exception_handler(SelfGrantDisabled)
     async def self_grant_disabled_handler(_request, exc: SelfGrantDisabled):
+        return JSONResponse({"detail": str(exc)}, status_code=403)
+
+    @app.exception_handler(SelfGrantConfirmationRequired)
+    async def self_grant_confirmation_handler(
+        _request, exc: SelfGrantConfirmationRequired
+    ):
         return JSONResponse({"detail": str(exc)}, status_code=403)
 
     @app.exception_handler(AuthorizationDenied)
@@ -278,6 +365,7 @@ def create_management_api(
             "principal_id": principal.principal_id,
             "email": principal.email,
             "display_name": principal.display_name,
+            "is_platform_admin": principal.is_platform_admin,
             "allow_admin_self_grant": allow_admin_self_grant,
         }
 
@@ -290,6 +378,15 @@ def create_management_api(
             "workspace_admins_list_all_agents": True,
             "management_implies_content_access": False,
             "content_roles": ["reader", "editor", "full_access"],
+            "workspace_admission_policies": [
+                "invite_only",
+                "all_authenticated",
+                "external_entitlement",
+            ],
+            "workspace_agent_creation_policies": [
+                "admins_only",
+                "all_members",
+            ],
         }
 
     @app.get("/workspaces")
@@ -297,7 +394,8 @@ def create_management_api(
         principal: ManagementPrincipal = Depends(current_principal),
     ):
         items = await management_store.list_workspaces(
-            principal_id=principal.principal_id
+            principal_id=principal.principal_id,
+            is_platform_admin=principal.is_platform_admin,
         )
         return {"workspaces": [_workspace_payload(item) for item in items]}
 
@@ -309,6 +407,56 @@ def create_management_api(
         item = await management_store.create_workspace(
             principal_id=principal.principal_id,
             workspace_slug=body.slug,
+            admission_policy=WorkspaceAdmissionPolicy(
+                body.admission_policy
+            ),
+            agent_creation_policy=WorkspaceAgentCreationPolicy(
+                body.agent_creation_policy
+            ),
+            is_platform_admin=principal.is_platform_admin,
+        )
+        return _workspace_payload(item)
+
+    @app.post("/workspaces/{workspace_slug}/join")
+    async def join_workspace(
+        workspace_slug: str,
+        principal: ManagementPrincipal = Depends(current_principal),
+    ):
+        role = await management_store.ensure_workspace_admission(
+            principal_id=principal.principal_id,
+            email=principal.email,
+            display_name=principal.display_name,
+            workspace_slug=workspace_slug,
+        )
+        return {"role": role.value}
+
+    @app.post("/workspaces/{workspace_slug}/platform-admin-role")
+    async def assign_platform_admin_role(
+        workspace_slug: str,
+        principal: ManagementPrincipal = Depends(current_principal),
+    ):
+        item = await management_store.assign_platform_admin_role(
+            principal_id=principal.principal_id,
+            workspace_slug=workspace_slug,
+            is_platform_admin=principal.is_platform_admin,
+        )
+        return _workspace_payload(item)
+
+    @app.put("/workspaces/{workspace_slug}/policy")
+    async def update_workspace_policy(
+        workspace_slug: str,
+        body: UpdateWorkspacePolicyRequest,
+        principal: ManagementPrincipal = Depends(current_principal),
+    ):
+        item = await management_store.update_workspace_policy(
+            principal_id=principal.principal_id,
+            workspace_slug=workspace_slug,
+            admission_policy=WorkspaceAdmissionPolicy(
+                body.admission_policy
+            ),
+            agent_creation_policy=WorkspaceAgentCreationPolicy(
+                body.agent_creation_policy
+            ),
         )
         return _workspace_payload(item)
 
@@ -484,6 +632,7 @@ def create_management_api(
                 else None
             ),
             allow_admin_self_grant=allow_admin_self_grant,
+            self_grant_confirmed=body.confirm_self_grant,
         )
         return {"updated": True}
 
@@ -504,6 +653,23 @@ def create_management_api(
             enabled=body.enabled,
         )
         return {"updated": True}
+
+    @app.post(
+        "/workspaces/{workspace_slug}/agents/{agent_slug}/transfer-management"
+    )
+    async def transfer_agent_management(
+        workspace_slug: str,
+        agent_slug: str,
+        body: PrincipalTargetRequest,
+        principal: ManagementPrincipal = Depends(current_principal),
+    ):
+        await management_store.transfer_agent_management(
+            principal_id=principal.principal_id,
+            workspace_slug=workspace_slug,
+            agent_slug=agent_slug,
+            target_principal_id=body.target_principal_id,
+        )
+        return {"transferred": True}
 
     @app.get("/workspaces/{workspace_slug}/audit")
     async def list_audit(
@@ -674,6 +840,7 @@ def create_management_api(
 
 
 __all__ = [
+    "DefaultWorkspace",
     "LocalManagementScope",
     "ManagementPrincipal",
     "create_management_api",

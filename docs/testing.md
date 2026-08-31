@@ -15,6 +15,13 @@ The security contract requires more than a happy-path unit test.
 
 - Fresh-schema migration and migration from a built wheel
 - Workspace and agent-profile isolation
+- Platform-admin metadata boundaries and platform-only workspace creation
+- Invite-only, all-authenticated, and injected external-entitlement admission
+- Administrator-only and all-member agent creation
+- Manager-without-content grants, transfers, and ownership changes
+- Explicit administrator self-grants with the deployment flag enabled/disabled
+- Atomic creator manager/full-access rows through API and MCP URL creation
+- Migration without authorization backfill
 - Encrypted directory traversal and Markdown round trips
 - Concurrent compare-and-swap writes
 - Concurrent idempotent retries and key-reuse rejection

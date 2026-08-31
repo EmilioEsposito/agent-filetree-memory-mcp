@@ -1,17 +1,26 @@
 export type WorkspaceRole = "owner" | "admin" | "member";
 export type ContentRole = "reader" | "editor" | "full_access";
+export type WorkspaceAdmissionPolicy =
+  | "invite_only"
+  | "all_authenticated"
+  | "external_entitlement";
+export type WorkspaceAgentCreationPolicy = "admins_only" | "all_members";
 
 export interface CurrentPrincipal {
   principal_id: string;
   email: string;
   display_name: string;
   allow_admin_self_grant: boolean;
+  is_platform_admin: boolean;
 }
 
 export interface WorkspaceSummary {
   workspace_id: string;
   slug: string;
-  role: WorkspaceRole;
+  role: WorkspaceRole | null;
+  admission_policy: WorkspaceAdmissionPolicy;
+  agent_creation_policy: WorkspaceAgentCreationPolicy;
+  can_create_agents: boolean;
   agent_count: number;
   member_count: number;
   created_at: string;

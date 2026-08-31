@@ -17,7 +17,7 @@ Nothing has been published yet. A locally built wheel behaves the same way:
 ```shell
 uv build
 python -m venv /tmp/agent-filetree-memory-wheel
-/tmp/agent-filetree-memory-wheel/bin/pip install 'dist/agent_filetree_memory_mcp-0.2.1-py3-none-any.whl[all]'
+/tmp/agent-filetree-memory-wheel/bin/pip install 'dist/agent_filetree_memory_mcp-0.3.0-py3-none-any.whl[all]'
 ```
 
 ## Database prerequisite

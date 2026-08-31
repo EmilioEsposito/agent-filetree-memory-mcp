@@ -41,8 +41,13 @@ without moving or duplicating its memory. Management permission is independent
 from reader/editor/full content access, and workspace administrators may see
 agent slugs without implicitly gaining decryption access. A deployer may allow
 explicit, audited administrator self-grants or disable them as policy.
-Agent creation atomically provisions an explicit full-content grant for the
-creator; it does not grant content access to other workspace administrators.
+Agent creation atomically provisions an explicit manager row and full-content
+grant for the creator; it does not grant content access to other workspace
+administrators. Platform administration is injected by the host and reveals
+only global workspace metadata until that principal explicitly takes a
+workspace role. Workspace admission and agent-creation policies are signed
+control-plane rows, with an injected provider-neutral resolver for external
+entitlements.
 
 ## Database injection
 
@@ -103,6 +108,11 @@ The UI calls the same application service as MCP; it has no direct database or
 privileged decryption path. FastAPI serves `/api`, `/mcp`, and `/ui` from one
 process, so the frontend and API remain version-matched without requiring Node
 at installation time.
+
+The policy migration does not infer or backfill existing agent managers or
+content grants. Existing agents retain their exact authorization rows; missing
+workspace policy rows default to invite-only admission and administrator-only
+agent creation.
 
 ## Deliberate non-goals
 

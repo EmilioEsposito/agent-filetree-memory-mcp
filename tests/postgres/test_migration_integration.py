@@ -172,6 +172,7 @@ def test_packaged_revision_upgrades_and_downgrades_from_host_alembic(tmp_path):
             "principal_profiles",
             "workspace_invitations",
             "workspace_members",
+            "workspace_policies",
             "workspaces",
         }
         expected_columns = {
@@ -283,5 +284,97 @@ def test_control_plane_migration_adopts_and_preserves_compatible_host_tables(
         names, ownership = asyncio.run(state())
         assert names == expected_tables | {"alembic_version"}
         assert ownership is None
+    finally:
+        asyncio.run(cleanup())
+
+
+def test_policy_migration_does_not_backfill_existing_agents_or_permissions(
+    tmp_path,
+):
+    url = _database_url()
+    schema = "afm_no_backfill_" + uuid4().hex[:12]
+    config = _host_config(tmp_path, url=url, schema=schema)
+
+    async def prepare() -> None:
+        engine = create_async_engine(url)
+        async with engine.begin() as connection:
+            await connection.execute(text(f"CREATE SCHEMA {schema}"))
+        await engine.dispose()
+
+    async def seed_pre_policy_agent() -> None:
+        engine = create_async_engine(url)
+        tag = b"x" * 32
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    f'INSERT INTO "{schema}".workspaces '
+                    "(workspace_id, slug, created_by_principal_id, "
+                    "integrity_version, integrity_tag) "
+                    "VALUES ('workspace-before-policy', 'existing', "
+                    "'principal-before-policy', 1, :tag)"
+                ),
+                {"tag": tag},
+            )
+            await connection.execute(
+                text(
+                    f'INSERT INTO "{schema}".workspace_members '
+                    "(workspace_id, principal_id, role, integrity_version, "
+                    "integrity_tag) VALUES ('workspace-before-policy', "
+                    "'principal-before-policy', 'owner', 1, :tag)"
+                ),
+                {"tag": tag},
+            )
+            await connection.execute(
+                text(
+                    f'INSERT INTO "{schema}".agent_profiles '
+                    "(agent_profile_id, workspace_id, slug, display_alias, "
+                    "created_by_principal_id, integrity_version, integrity_tag) "
+                    "VALUES ('agent-before-policy', 'workspace-before-policy', "
+                    "'existing-agent', 'Existing agent', "
+                    "'principal-before-policy', 1, :tag)"
+                ),
+                {"tag": tag},
+            )
+            await connection.execute(
+                text(
+                    f'INSERT INTO "{schema}".agent_grants '
+                    "(workspace_id, agent_profile_id, principal_id, role, "
+                    "integrity_version, integrity_tag) VALUES "
+                    "('workspace-before-policy', 'agent-before-policy', "
+                    "'principal-before-policy', 'admin', 1, :tag)"
+                ),
+                {"tag": tag},
+            )
+        await engine.dispose()
+
+    async def counts() -> tuple[int, int]:
+        engine = create_async_engine(url)
+        async with engine.connect() as connection:
+            policy_count = (
+                await connection.execute(
+                    text(f'SELECT count(*) FROM "{schema}".workspace_policies')
+                )
+            ).scalar_one()
+            manager_count = (
+                await connection.execute(
+                    text(f'SELECT count(*) FROM "{schema}".agent_managers')
+                )
+            ).scalar_one()
+        await engine.dispose()
+        return policy_count, manager_count
+
+    async def cleanup() -> None:
+        engine = create_async_engine(url)
+        async with engine.begin() as connection:
+            await connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+        await engine.dispose()
+
+    asyncio.run(prepare())
+    try:
+        configure_host_alembic(config, schema=schema)
+        command.upgrade(config, "afm_0003")
+        asyncio.run(seed_pre_policy_agent())
+        command.upgrade(config, "agent_filetree_memory@head")
+        assert asyncio.run(counts()) == (0, 0)
     finally:
         asyncio.run(cleanup())

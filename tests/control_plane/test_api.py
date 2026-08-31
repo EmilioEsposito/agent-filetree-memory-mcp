@@ -58,6 +58,7 @@ def test_management_api_uses_injected_identity_and_separate_policy() -> None:
         "principal_id": "oidc:tenant:person",
         "email": "person@example.test",
         "display_name": "Example person",
+        "is_platform_admin": False,
         "allow_admin_self_grant": True,
     }
     assert policy.json() == {
@@ -65,6 +66,15 @@ def test_management_api_uses_injected_identity_and_separate_policy() -> None:
         "workspace_admins_list_all_agents": True,
         "management_implies_content_access": False,
         "content_roles": ["reader", "editor", "full_access"],
+        "workspace_admission_policies": [
+            "invite_only",
+            "all_authenticated",
+            "external_entitlement",
+        ],
+        "workspace_agent_creation_policies": [
+            "admins_only",
+            "all_members",
+        ],
     }
     assert store.calls[0][0] == "principal"
 

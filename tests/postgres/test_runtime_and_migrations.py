@@ -49,6 +49,7 @@ def test_schema_validation_and_metadata_are_configurable():
         "principal_profiles",
         "workspace_invitations",
         "workspace_members",
+        "workspace_policies",
         "workspaces",
     }
     objects = metadata.tables["memory_2.memory_objects"]
@@ -103,6 +104,7 @@ def test_packaged_revision_and_host_configuration():
     assert (location / "0001_encrypted_filetree.py").is_file()
     assert (location / "0002_normalize_constraint_names.py").is_file()
     assert (location / "0003_management_control_plane.py").is_file()
+    assert (location / "0004_workspace_authorization_policies.py").is_file()
     config = Config()
     configure_host_alembic(
         config,

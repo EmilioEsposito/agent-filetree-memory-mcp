@@ -62,6 +62,11 @@ _INTEGRITY_RECORD_FIELDS = {
         "created_by_principal_id",
     ),
     "workspace_member": ("workspace_id", "principal_id", "role"),
+    "workspace_policy": (
+        "workspace_id",
+        "admission_policy",
+        "agent_creation_policy",
+    ),
     "agent_profile": (
         "workspace_id",
         "agent_profile_id",
@@ -100,6 +105,7 @@ _INTEGRITY_RECORD_DOMAINS = {
     "principal_profile": "principal-profile/v1",
     "workspace": "workspace/v1",
     "workspace_member": "workspace-member/v1",
+    "workspace_policy": "workspace-policy/v1",
     "agent_profile": "agent-profile/v1",
     "agent_grant": "agent-grant/v1",
     "workspace_invitation": "workspace-invitation/v1",
@@ -114,6 +120,17 @@ class WorkspaceRole(StrEnum):
     OWNER = "owner"
     ADMIN = "admin"
     MEMBER = "member"
+
+
+class WorkspaceAdmissionPolicy(StrEnum):
+    INVITE_ONLY = "invite_only"
+    ALL_AUTHENTICATED = "all_authenticated"
+    EXTERNAL_ENTITLEMENT = "external_entitlement"
+
+
+class WorkspaceAgentCreationPolicy(StrEnum):
+    ADMINS_ONLY = "admins_only"
+    ALL_MEMBERS = "all_members"
 
 
 class AgentGrantRole(StrEnum):
@@ -206,6 +223,54 @@ workspace_members = Table(
     CheckConstraint(
         "octet_length(integrity_tag) = 32",
         name="ck_afm_workspace_members_integrity_tag_length",
+    ),
+    schema=DEFAULT_SCHEMA,
+)
+
+workspace_policies = Table(
+    "workspace_policies",
+    namespace_metadata,
+    Column(
+        "workspace_id",
+        String(32),
+        ForeignKey(
+            f"{DEFAULT_SCHEMA}.workspaces.workspace_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    ),
+    Column("admission_policy", String(32), nullable=False),
+    Column("agent_creation_policy", String(32), nullable=False),
+    Column("integrity_version", SmallInteger, nullable=False),
+    Column("integrity_tag", LargeBinary(32), nullable=False),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    CheckConstraint(
+        "admission_policy IN ('invite_only', 'all_authenticated', "
+        "'external_entitlement')",
+        name="ck_afm_workspace_policies_admission_policy",
+    ),
+    CheckConstraint(
+        "agent_creation_policy IN ('admins_only', 'all_members')",
+        name="ck_afm_workspace_policies_agent_creation_policy",
+    ),
+    CheckConstraint(
+        "integrity_version = 1",
+        name="ck_afm_workspace_policies_integrity_version",
+    ),
+    CheckConstraint(
+        "octet_length(integrity_tag) = 32",
+        name="ck_afm_workspace_policies_integrity_tag_length",
     ),
     schema=DEFAULT_SCHEMA,
 )
@@ -480,6 +545,7 @@ class NamespaceTables:
     metadata: MetaData
     workspaces: Table
     workspace_members: Table
+    workspace_policies: Table
     agent_profiles: Table
     agent_grants: Table
     principal_profiles: Table
@@ -492,6 +558,7 @@ _DEFAULT_TABLES = NamespaceTables(
     metadata=namespace_metadata,
     workspaces=workspaces,
     workspace_members=workspace_members,
+    workspace_policies=workspace_policies,
     agent_profiles=agent_profiles,
     agent_grants=agent_grants,
     principal_profiles=principal_profiles,
@@ -544,6 +611,7 @@ def namespace_tables_for_schema(
         metadata=metadata,
         workspaces=metadata.tables[f"{schema}.workspaces"],
         workspace_members=metadata.tables[f"{schema}.workspace_members"],
+        workspace_policies=metadata.tables[f"{schema}.workspace_policies"],
         agent_profiles=metadata.tables[f"{schema}.agent_profiles"],
         agent_grants=metadata.tables[f"{schema}.agent_grants"],
         principal_profiles=metadata.tables[f"{schema}.principal_profiles"],
@@ -742,7 +810,12 @@ async def _acquire_provisioning_lock(
 
 
 class NamespaceStore:
-    """Resolve or atomically create authorized workspace/agent aliases."""
+    """Resolve or atomically create authorized agent aliases.
+
+    Workspace creation is intentionally outside the MCP namespace path and is
+    restricted to the platform-administrator control plane. Hosts must admit a
+    verified principal to a workspace before resolving its MCP URL.
+    """
 
     def __init__(
         self,
@@ -783,6 +856,84 @@ class NamespaceStore:
         self._max_workspaces_per_principal = max_workspaces_per_principal
         self._max_agents_per_workspace = max_agents_per_workspace
 
+    def _signed(self, record_type: str, **fields: str) -> dict[str, object]:
+        return {
+            **fields,
+            "integrity_version": _INTEGRITY_VERSION,
+            "integrity_tag": _record_integrity_tag(
+                self._integrity_key,
+                record_type,
+                integrity_service_namespace=self._integrity_service_namespace,
+                **fields,
+            ),
+        }
+
+    def _verify(self, row: Any, record_type: str, **fields: object) -> None:
+        _require_record_integrity(
+            integrity_key=self._integrity_key,
+            integrity_service_namespace=self._integrity_service_namespace,
+            record_type=record_type,
+            integrity_version=row.integrity_version,
+            integrity_tag=row.integrity_tag,
+            fields=fields,
+        )
+
+    async def _workspace_agent_creation_policy(
+        self,
+        session: Any,
+        *,
+        workspace_id: str,
+    ) -> WorkspaceAgentCreationPolicy:
+        row = (
+            await session.execute(
+                select(self._tables.workspace_policies)
+                .where(
+                    self._tables.workspace_policies.c.workspace_id
+                    == workspace_id
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if row is None:
+            # Existing installations predate policy rows. Missing policy data
+            # must retain the least-permissive behavior until explicitly set.
+            return WorkspaceAgentCreationPolicy.ADMINS_ONLY
+        self._verify(
+            row,
+            "workspace_policy",
+            workspace_id=row.workspace_id,
+            admission_policy=row.admission_policy,
+            agent_creation_policy=row.agent_creation_policy,
+        )
+        try:
+            return WorkspaceAgentCreationPolicy(row.agent_creation_policy)
+        except (TypeError, ValueError):
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
+
+    async def _audit(
+        self,
+        session: Any,
+        *,
+        workspace_id: str,
+        actor_principal_id: str,
+        action: str,
+        target_kind: str,
+        target_id: str,
+    ) -> None:
+        await session.execute(
+            self._tables.management_audit_events.insert().values(
+                **self._signed(
+                    "management_audit",
+                    event_id=uuid4().hex,
+                    workspace_id=workspace_id,
+                    actor_principal_id=actor_principal_id,
+                    action=action,
+                    target_kind=target_kind,
+                    target_id=target_id,
+                )
+            )
+        )
+
     async def resolve_or_create(
         self,
         *,
@@ -792,12 +943,11 @@ class NamespaceStore:
         action: MemoryAction,
         display_alias: str | None = None,
     ) -> NamespaceBinding:
-        """Resolve stable IDs, creating only within the caller's membership.
+        """Resolve stable IDs and create an agent only when policy permits it.
 
-        PostgreSQL uniqueness plus ``ON CONFLICT DO NOTHING`` makes competing
-        claims deterministic: exactly one principal can claim a new workspace,
-        and exactly one member becomes administrator of a concurrently created
-        agent profile.
+        PostgreSQL advisory locking, uniqueness, the creator's full content
+        grant, and the creator's explicit manager row share one transaction.
+        Existing agents are never backfilled implicitly.
         """
 
         workspace_slug = validate_slug(workspace_slug, field="workspace_slug")
@@ -813,156 +963,51 @@ class NamespaceStore:
         )
 
         async with self._session_factory() as session, session.begin():
-            await _acquire_provisioning_lock(
-                session,
-                integrity_service_namespace=self._integrity_service_namespace,
-                domain="principal-workspaces",
-                value=principal_id,
+            workspace_row = (
+                await session.execute(
+                    select(self._tables.workspaces)
+                    .where(self._tables.workspaces.c.slug == workspace_slug)
+                    .with_for_update()
+                )
+            ).one_or_none()
+            if workspace_row is None:
+                raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+            self._verify(
+                workspace_row,
+                "workspace",
+                workspace_id=workspace_row.workspace_id,
+                slug=workspace_row.slug,
+                created_by_principal_id=workspace_row.created_by_principal_id,
             )
-            workspace_exists = (
+            workspace_id = workspace_row.workspace_id
+            member_row = (
                 await session.execute(
-                    select(self._tables.workspaces.c.workspace_id).where(
-                        self._tables.workspaces.c.slug == workspace_slug
+                    select(self._tables.workspace_members)
+                    .where(
+                        self._tables.workspace_members.c.workspace_id
+                        == workspace_id,
+                        self._tables.workspace_members.c.principal_id
+                        == principal_id,
                     )
+                    .with_for_update()
                 )
-            ).scalar_one_or_none()
-            if workspace_exists is None:
-                workspace_count = (
-                    await session.execute(
-                        select(func.count())
-                        .select_from(self._tables.workspaces)
-                        .where(
-                            self._tables.workspaces.c.created_by_principal_id
-                            == principal_id
-                        )
-                    )
-                ).scalar_one()
-                if workspace_count >= self._max_workspaces_per_principal:
-                    raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+            ).one_or_none()
+            if member_row is None:
+                raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+            self._verify(
+                member_row,
+                "workspace_member",
+                workspace_id=member_row.workspace_id,
+                principal_id=member_row.principal_id,
+                role=member_row.role,
+            )
+            try:
+                workspace_role = WorkspaceRole(member_row.role)
+            except (TypeError, ValueError):
+                raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
 
-            workspace_id = uuid4().hex
-            workspace_values = {
-                "workspace_id": workspace_id,
-                "slug": workspace_slug,
-                "created_by_principal_id": principal_id,
-            }
-            created_workspace_id = (
-                await session.execute(
-                    pg_insert(self._tables.workspaces)
-                    .values(
-                        **workspace_values,
-                        integrity_version=_INTEGRITY_VERSION,
-                        integrity_tag=_record_integrity_tag(
-                            self._integrity_key,
-                            "workspace",
-                            integrity_service_namespace=(
-                                self._integrity_service_namespace
-                            ),
-                            **workspace_values,
-                        ),
-                    )
-                    .on_conflict_do_nothing(index_elements=[self._tables.workspaces.c.slug])
-                    .returning(self._tables.workspaces.c.workspace_id)
-                )
-            ).scalar_one_or_none()
-
-            if created_workspace_id is not None:
-                workspace_id = created_workspace_id
-                workspace_role = WorkspaceRole.OWNER
-                member_values = {
-                    "workspace_id": workspace_id,
-                    "principal_id": principal_id,
-                    "role": workspace_role.value,
-                }
-                created_member_tag = (
-                    await session.execute(
-                        pg_insert(self._tables.workspace_members)
-                        .values(
-                            **member_values,
-                            integrity_version=_INTEGRITY_VERSION,
-                            integrity_tag=_record_integrity_tag(
-                                self._integrity_key,
-                                "workspace_member",
-                                integrity_service_namespace=(
-                                    self._integrity_service_namespace
-                                ),
-                                **member_values,
-                            ),
-                        )
-                        .on_conflict_do_nothing(
-                            index_elements=[
-                                self._tables.workspace_members.c.workspace_id,
-                                self._tables.workspace_members.c.principal_id,
-                            ]
-                        )
-                        .returning(self._tables.workspace_members.c.integrity_tag)
-                    )
-                ).scalar_one_or_none()
-                if created_member_tag is None:
-                    raise AuthorizationDenied(_AUTHORIZATION_DENIED)
-            else:
-                workspace_row = (
-                    await session.execute(
-                        select(
-                            self._tables.workspaces.c.workspace_id,
-                            self._tables.workspaces.c.slug,
-                            self._tables.workspaces.c.created_by_principal_id,
-                            self._tables.workspaces.c.integrity_version,
-                            self._tables.workspaces.c.integrity_tag,
-                        ).where(self._tables.workspaces.c.slug == workspace_slug)
-                    )
-                ).one_or_none()
-                if workspace_row is None:
-                    raise AuthorizationDenied(_AUTHORIZATION_DENIED)
-                _require_record_integrity(
-                    integrity_key=self._integrity_key,
-                    integrity_service_namespace=self._integrity_service_namespace,
-                    record_type="workspace",
-                    integrity_version=workspace_row.integrity_version,
-                    integrity_tag=workspace_row.integrity_tag,
-                    fields={
-                        "workspace_id": workspace_row.workspace_id,
-                        "slug": workspace_row.slug,
-                        "created_by_principal_id": (
-                            workspace_row.created_by_principal_id
-                        ),
-                    },
-                )
-                workspace_id = workspace_row.workspace_id
-                member_row = (
-                    await session.execute(
-                        select(
-                            self._tables.workspace_members.c.role,
-                            self._tables.workspace_members.c.integrity_version,
-                            self._tables.workspace_members.c.integrity_tag,
-                        ).where(
-                            self._tables.workspace_members.c.workspace_id == workspace_id,
-                            self._tables.workspace_members.c.principal_id == principal_id,
-                        )
-                    )
-                ).one_or_none()
-                if member_row is None:
-                    raise AuthorizationDenied(_AUTHORIZATION_DENIED)
-                _require_record_integrity(
-                    integrity_key=self._integrity_key,
-                    integrity_service_namespace=self._integrity_service_namespace,
-                    record_type="workspace_member",
-                    integrity_version=member_row.integrity_version,
-                    integrity_tag=member_row.integrity_tag,
-                    fields={
-                        "workspace_id": workspace_id,
-                        "principal_id": principal_id,
-                        "role": member_row.role,
-                    },
-                )
-                try:
-                    workspace_role = WorkspaceRole(member_row.role)
-                except (TypeError, ValueError):
-                    raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
-
-            agent_profile_id = uuid4().hex
             profile_values = {
-                "agent_profile_id": agent_profile_id,
+                "agent_profile_id": uuid4().hex,
                 "workspace_id": workspace_id,
                 "slug": agent_slug,
                 "display_alias": requested_display_alias,
@@ -974,7 +1019,7 @@ class NamespaceStore:
                 domain="workspace-agents",
                 value=workspace_id,
             )
-            agent_exists = (
+            agent_profile_id = (
                 await session.execute(
                     select(self._tables.agent_profiles.c.agent_profile_id).where(
                         self._tables.agent_profiles.c.workspace_id == workspace_id,
@@ -982,10 +1027,17 @@ class NamespaceStore:
                     )
                 )
             ).scalar_one_or_none()
-            if agent_exists is None and workspace_role in {
+            creation_policy = await self._workspace_agent_creation_policy(
+                session,
+                workspace_id=workspace_id,
+            )
+            may_create = workspace_role in {
                 WorkspaceRole.OWNER,
                 WorkspaceRole.ADMIN,
-            }:
+            } or creation_policy is WorkspaceAgentCreationPolicy.ALL_MEMBERS
+            if agent_profile_id is None and not may_create:
+                raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+            if agent_profile_id is None:
                 agent_count = (
                     await session.execute(
                         select(func.count())
@@ -996,7 +1048,7 @@ class NamespaceStore:
                 if agent_count >= self._max_agents_per_workspace:
                     raise AuthorizationDenied(_AUTHORIZATION_DENIED)
             created_agent_id = None
-            if workspace_role in {WorkspaceRole.OWNER, WorkspaceRole.ADMIN}:
+            if agent_profile_id is None:
                 created_agent_id = (
                     await session.execute(
                         pg_insert(self._tables.agent_profiles)
@@ -1058,6 +1110,61 @@ class NamespaceStore:
                 ).scalar_one_or_none()
                 if created_grant_tag is None:
                     raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+                manager_values = {
+                    "workspace_id": workspace_id,
+                    "agent_profile_id": agent_profile_id,
+                    "principal_id": principal_id,
+                }
+                created_manager_tag = (
+                    await session.execute(
+                        pg_insert(self._tables.agent_managers)
+                        .values(
+                            **manager_values,
+                            integrity_version=_INTEGRITY_VERSION,
+                            integrity_tag=_record_integrity_tag(
+                                self._integrity_key,
+                                "agent_manager",
+                                integrity_service_namespace=(
+                                    self._integrity_service_namespace
+                                ),
+                                **manager_values,
+                            ),
+                        )
+                        .on_conflict_do_nothing(
+                            index_elements=[
+                                self._tables.agent_managers.c.agent_profile_id,
+                                self._tables.agent_managers.c.principal_id,
+                            ]
+                        )
+                        .returning(self._tables.agent_managers.c.integrity_tag)
+                    )
+                ).scalar_one_or_none()
+                if created_manager_tag is None:
+                    raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+                await self._audit(
+                    session,
+                    workspace_id=workspace_id,
+                    actor_principal_id=principal_id,
+                    action="agent.create",
+                    target_kind="agent",
+                    target_id=agent_profile_id,
+                )
+                await self._audit(
+                    session,
+                    workspace_id=workspace_id,
+                    actor_principal_id=principal_id,
+                    action="agent.manager.grant",
+                    target_kind="principal",
+                    target_id=principal_id,
+                )
+                await self._audit(
+                    session,
+                    workspace_id=workspace_id,
+                    actor_principal_id=principal_id,
+                    action="agent.content.grant",
+                    target_kind="principal",
+                    target_id=principal_id,
+                )
             else:
                 agent_row = (
                     await session.execute(
@@ -1152,6 +1259,8 @@ __all__ = [
     "NamespaceTables",
     "DEFAULT_SCHEMA",
     "WorkspaceRole",
+    "WorkspaceAdmissionPolicy",
+    "WorkspaceAgentCreationPolicy",
     "agent_managers",
     "agent_grants",
     "agent_profiles",
@@ -1164,5 +1273,6 @@ __all__ = [
     "validate_slug",
     "workspace_invitations",
     "workspace_members",
+    "workspace_policies",
     "workspaces",
 ]

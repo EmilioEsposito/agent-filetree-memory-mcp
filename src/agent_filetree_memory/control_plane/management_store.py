@@ -9,8 +9,10 @@ grant one to themselves.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+import inspect
 import re
 from typing import Any
 from uuid import uuid4
@@ -24,6 +26,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .namespace_store import (
     AgentGrantRole,
     NamespaceTables,
+    WorkspaceAdmissionPolicy,
+    WorkspaceAgentCreationPolicy,
     WorkspaceRole,
     _acquire_provisioning_lock,
     _record_integrity_tag,
@@ -49,6 +53,10 @@ class SelfGrantDisabled(AuthorizationDenied):
     """Deployment policy blocks administrator content self-grants."""
 
 
+class SelfGrantConfirmationRequired(AuthorizationDenied):
+    """A privileged content self-grant lacked explicit confirmation."""
+
+
 @dataclass(frozen=True, slots=True)
 class PrincipalProfile:
     principal_id: str
@@ -57,10 +65,35 @@ class PrincipalProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceEntitlementRequest:
+    """Provider-neutral input for an external workspace entitlement check."""
+
+    workspace_id: str
+    workspace_slug: str
+    principal_id: str
+    email: str
+    display_name: str
+
+
+EntitlementResolver = Callable[
+    [WorkspaceEntitlementRequest], bool | Awaitable[bool]
+]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspacePolicy:
+    admission_policy: WorkspaceAdmissionPolicy
+    agent_creation_policy: WorkspaceAgentCreationPolicy
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceSummary:
     workspace_id: str
     slug: str
-    role: WorkspaceRole
+    role: WorkspaceRole | None
+    admission_policy: WorkspaceAdmissionPolicy
+    agent_creation_policy: WorkspaceAgentCreationPolicy
+    can_create_agents: bool
     agent_count: int
     member_count: int
     created_at: datetime
@@ -172,6 +205,7 @@ class ManagementStore:
         integrity_service_namespace: str = "agent-filetree-memory",
         max_workspaces_per_principal: int = 10,
         max_agents_per_workspace: int = 100,
+        entitlement_resolver: EntitlementResolver | None = None,
     ) -> None:
         if not callable(session_factory):
             raise TypeError("session_factory must be callable")
@@ -193,6 +227,11 @@ class ManagementStore:
         self._integrity_service_namespace = integrity_service_namespace
         self._max_workspaces_per_principal = max_workspaces_per_principal
         self._max_agents_per_workspace = max_agents_per_workspace
+        if entitlement_resolver is not None and not callable(
+            entitlement_resolver
+        ):
+            raise TypeError("entitlement_resolver must be callable")
+        self._entitlement_resolver = entitlement_resolver
 
     def _signed(self, record_type: str, **fields: str) -> dict[str, object]:
         return {
@@ -221,6 +260,156 @@ class ManagementStore:
             integrity_version=row.integrity_version,
             integrity_tag=row.integrity_tag,
             fields=fields,
+        )
+
+    async def _workspace_row_by_slug(
+        self,
+        session: Any,
+        *,
+        workspace_slug: str,
+        for_update: bool = False,
+    ) -> Any:
+        workspace_slug = validate_slug(
+            workspace_slug,
+            field="workspace_slug",
+        )
+        statement = select(self._tables.workspaces).where(
+            self._tables.workspaces.c.slug == workspace_slug
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        row = (await session.execute(statement)).one_or_none()
+        if row is None:
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+        self._verify(
+            row,
+            "workspace",
+            workspace_id=row.workspace_id,
+            slug=row.slug,
+            created_by_principal_id=row.created_by_principal_id,
+        )
+        return row
+
+    async def _workspace_role(
+        self,
+        session: Any,
+        *,
+        workspace_id: str,
+        principal_id: str,
+        for_update: bool = False,
+    ) -> WorkspaceRole | None:
+        statement = select(self._tables.workspace_members).where(
+            self._tables.workspace_members.c.workspace_id == workspace_id,
+            self._tables.workspace_members.c.principal_id == principal_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        row = (await session.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        self._verify(
+            row,
+            "workspace_member",
+            workspace_id=row.workspace_id,
+            principal_id=row.principal_id,
+            role=row.role,
+        )
+        try:
+            return WorkspaceRole(row.role)
+        except (TypeError, ValueError):
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
+
+    async def _workspace_policy(
+        self,
+        session: Any,
+        *,
+        workspace_id: str,
+        for_update: bool = False,
+    ) -> WorkspacePolicy:
+        statement = select(self._tables.workspace_policies).where(
+            self._tables.workspace_policies.c.workspace_id == workspace_id
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        row = (await session.execute(statement)).one_or_none()
+        if row is None:
+            return WorkspacePolicy(
+                admission_policy=WorkspaceAdmissionPolicy.INVITE_ONLY,
+                agent_creation_policy=(
+                    WorkspaceAgentCreationPolicy.ADMINS_ONLY
+                ),
+            )
+        self._verify(
+            row,
+            "workspace_policy",
+            workspace_id=row.workspace_id,
+            admission_policy=row.admission_policy,
+            agent_creation_policy=row.agent_creation_policy,
+        )
+        try:
+            return WorkspacePolicy(
+                admission_policy=WorkspaceAdmissionPolicy(
+                    row.admission_policy
+                ),
+                agent_creation_policy=WorkspaceAgentCreationPolicy(
+                    row.agent_creation_policy
+                ),
+            )
+        except (TypeError, ValueError):
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
+
+    @staticmethod
+    def _can_create_agents(
+        role: WorkspaceRole | None,
+        policy: WorkspacePolicy,
+    ) -> bool:
+        return role in _WORKSPACE_ADMIN_ROLES or (
+            role is WorkspaceRole.MEMBER
+            and policy.agent_creation_policy
+            is WorkspaceAgentCreationPolicy.ALL_MEMBERS
+        )
+
+    async def _summary(
+        self,
+        session: Any,
+        *,
+        workspace_row: Any,
+        role: WorkspaceRole | None,
+    ) -> WorkspaceSummary:
+        policy = await self._workspace_policy(
+            session,
+            workspace_id=workspace_row.workspace_id,
+        )
+        agent_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(self._tables.agent_profiles)
+                .where(
+                    self._tables.agent_profiles.c.workspace_id
+                    == workspace_row.workspace_id
+                )
+            )
+        ).scalar_one()
+        member_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(self._tables.workspace_members)
+                .where(
+                    self._tables.workspace_members.c.workspace_id
+                    == workspace_row.workspace_id
+                )
+            )
+        ).scalar_one()
+        return WorkspaceSummary(
+            workspace_id=workspace_row.workspace_id,
+            slug=workspace_row.slug,
+            role=role,
+            admission_policy=policy.admission_policy,
+            agent_creation_policy=policy.agent_creation_policy,
+            can_create_agents=self._can_create_agents(role, policy),
+            agent_count=agent_count,
+            member_count=member_count,
+            created_at=workspace_row.created_at,
         )
 
     async def _audit(
@@ -553,6 +742,221 @@ class ManagementStore:
             display_name=normalized_name,
         )
 
+    async def ensure_workspace_admission(
+        self,
+        *,
+        principal_id: str,
+        email: str,
+        display_name: str,
+        workspace_slug: str,
+    ) -> WorkspaceRole:
+        """JIT-admit one verified principal according to workspace policy.
+
+        Invitations are claimed by :meth:`register_principal` before this
+        method runs. External entitlement is injected by the host and any
+        resolver error, non-boolean answer, or missing resolver fails closed.
+        """
+
+        validate_opaque_id(principal_id, field="principal_id")
+        normalized_email = normalize_email(email)
+        normalized_name = normalize_display_name(
+            display_name,
+            fallback=normalized_email,
+        )
+        workspace_slug = validate_slug(
+            workspace_slug,
+            field="workspace_slug",
+        )
+        async with self._session_factory() as session:
+            workspace = await self._workspace_row_by_slug(
+                session,
+                workspace_slug=workspace_slug,
+            )
+            existing_role = await self._workspace_role(
+                session,
+                workspace_id=workspace.workspace_id,
+                principal_id=principal_id,
+            )
+            if existing_role is not None:
+                return existing_role
+            policy = await self._workspace_policy(
+                session,
+                workspace_id=workspace.workspace_id,
+            )
+
+        entitled = False
+        if policy.admission_policy is WorkspaceAdmissionPolicy.ALL_AUTHENTICATED:
+            entitled = True
+        elif (
+            policy.admission_policy
+            is WorkspaceAdmissionPolicy.EXTERNAL_ENTITLEMENT
+            and self._entitlement_resolver is not None
+        ):
+            request = WorkspaceEntitlementRequest(
+                workspace_id=workspace.workspace_id,
+                workspace_slug=workspace.slug,
+                principal_id=principal_id,
+                email=normalized_email,
+                display_name=normalized_name,
+            )
+            try:
+                result = self._entitlement_resolver(request)
+                if inspect.isawaitable(result):
+                    result = await result
+                entitled = result is True
+            except Exception:
+                entitled = False
+        if not entitled:
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+
+        async with self._session_factory() as session, session.begin():
+            workspace = await self._workspace_row_by_slug(
+                session,
+                workspace_slug=workspace_slug,
+                for_update=True,
+            )
+            await _acquire_provisioning_lock(
+                session,
+                integrity_service_namespace=self._integrity_service_namespace,
+                domain="workspace-admission",
+                value=f"{workspace.workspace_id}:{principal_id}",
+            )
+            existing_role = await self._workspace_role(
+                session,
+                workspace_id=workspace.workspace_id,
+                principal_id=principal_id,
+                for_update=True,
+            )
+            if existing_role is not None:
+                return existing_role
+            current_policy = await self._workspace_policy(
+                session,
+                workspace_id=workspace.workspace_id,
+                for_update=True,
+            )
+            if current_policy != policy:
+                raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+            await session.execute(
+                self._tables.workspace_members.insert().values(
+                    **self._signed(
+                        "workspace_member",
+                        workspace_id=workspace.workspace_id,
+                        principal_id=principal_id,
+                        role=WorkspaceRole.MEMBER.value,
+                    )
+                )
+            )
+            await self._audit(
+                session,
+                workspace_id=workspace.workspace_id,
+                actor_principal_id=principal_id,
+                action="workspace.admission.jit",
+                target_kind="principal",
+                target_id=principal_id,
+            )
+        return WorkspaceRole.MEMBER
+
+    async def ensure_default_workspace(
+        self,
+        *,
+        principal_id: str,
+        workspace_slug: str,
+        admission_policy: WorkspaceAdmissionPolicy,
+        agent_creation_policy: WorkspaceAgentCreationPolicy,
+        is_platform_admin: bool,
+    ) -> WorkspaceSummary:
+        """Create one configured default only for a verified platform admin."""
+
+        if not is_platform_admin:
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+        workspace_slug = validate_slug(
+            workspace_slug,
+            field="workspace_slug",
+        )
+        try:
+            return await self.create_workspace(
+                principal_id=principal_id,
+                workspace_slug=workspace_slug,
+                admission_policy=admission_policy,
+                agent_creation_policy=agent_creation_policy,
+                is_platform_admin=True,
+            )
+        except ManagementConflict:
+            items = await self.list_workspaces(
+                principal_id=principal_id,
+                is_platform_admin=True,
+            )
+            for item in items:
+                if item.slug == workspace_slug:
+                    return item
+            raise
+
+    async def assign_platform_admin_role(
+        self,
+        *,
+        principal_id: str,
+        workspace_slug: str,
+        is_platform_admin: bool,
+    ) -> WorkspaceSummary:
+        """Explicitly join or promote a platform admin as workspace admin."""
+
+        if not is_platform_admin:
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+        validate_opaque_id(principal_id, field="principal_id")
+        async with self._session_factory() as session, session.begin():
+            workspace = await self._workspace_row_by_slug(
+                session,
+                workspace_slug=workspace_slug,
+                for_update=True,
+            )
+            current_role = await self._workspace_role(
+                session,
+                workspace_id=workspace.workspace_id,
+                principal_id=principal_id,
+                for_update=True,
+            )
+            if current_role is WorkspaceRole.OWNER:
+                role = current_role
+            else:
+                role = WorkspaceRole.ADMIN
+                values = self._signed(
+                    "workspace_member",
+                    workspace_id=workspace.workspace_id,
+                    principal_id=principal_id,
+                    role=role.value,
+                )
+                await session.execute(
+                    pg_insert(self._tables.workspace_members)
+                    .values(**values)
+                    .on_conflict_do_update(
+                        index_elements=[
+                            self._tables.workspace_members.c.workspace_id,
+                            self._tables.workspace_members.c.principal_id,
+                        ],
+                        set_={
+                            "role": role.value,
+                            "integrity_version": values[
+                                "integrity_version"
+                            ],
+                            "integrity_tag": values["integrity_tag"],
+                        },
+                    )
+                )
+                if current_role is not WorkspaceRole.ADMIN:
+                    await self._audit(
+                        session,
+                        workspace_id=workspace.workspace_id,
+                        actor_principal_id=principal_id,
+                        action="workspace.platform_admin.assign",
+                        target_kind="principal",
+                        target_id=principal_id,
+                    )
+        items = await self.list_workspaces(
+            principal_id=principal_id,
+            is_platform_admin=True,
+        )
+        return next(item for item in items if item.slug == workspace_slug)
+
     async def ensure_local_scope(
         self,
         *,
@@ -608,6 +1012,22 @@ class ManagementStore:
                 .on_conflict_do_nothing()
             )
             await session.execute(
+                pg_insert(self._tables.workspace_policies)
+                .values(
+                    **self._signed(
+                        "workspace_policy",
+                        workspace_id=workspace_id,
+                        admission_policy=(
+                            WorkspaceAdmissionPolicy.INVITE_ONLY.value
+                        ),
+                        agent_creation_policy=(
+                            WorkspaceAgentCreationPolicy.ADMINS_ONLY.value
+                        ),
+                    )
+                )
+                .on_conflict_do_nothing()
+            )
+            await session.execute(
                 pg_insert(self._tables.agent_profiles)
                 .values(
                     **self._signed(
@@ -634,6 +1054,18 @@ class ManagementStore:
                 )
                 .on_conflict_do_nothing()
             )
+            await session.execute(
+                pg_insert(self._tables.agent_managers)
+                .values(
+                    **self._signed(
+                        "agent_manager",
+                        workspace_id=workspace_id,
+                        agent_profile_id=agent_profile_id,
+                        principal_id=principal_id,
+                    )
+                )
+                .on_conflict_do_nothing()
+            )
         # Resolve through the normal integrity checks after idempotent seeding.
         async with self._session_factory() as session:
             access = await self._workspace_access(
@@ -656,6 +1088,12 @@ class ManagementStore:
                     principal_id=principal_id,
                 )
                 is not AgentGrantRole.ADMIN
+                or not await self._is_explicit_manager(
+                    session,
+                    workspace_id=workspace_id,
+                    agent_profile_id=agent_profile_id,
+                    principal_id=principal_id,
+                )
             ):
                 raise AuthorizationDenied(_AUTHORIZATION_DENIED)
 
@@ -664,13 +1102,35 @@ class ManagementStore:
         *,
         principal_id: str,
         workspace_slug: str,
+        admission_policy: WorkspaceAdmissionPolicy = (
+            WorkspaceAdmissionPolicy.INVITE_ONLY
+        ),
+        agent_creation_policy: WorkspaceAgentCreationPolicy = (
+            WorkspaceAgentCreationPolicy.ADMINS_ONLY
+        ),
+        is_platform_admin: bool = False,
     ) -> WorkspaceSummary:
+        if is_platform_admin is not True:
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+        try:
+            admission_policy = WorkspaceAdmissionPolicy(admission_policy)
+            agent_creation_policy = WorkspaceAgentCreationPolicy(
+                agent_creation_policy
+            )
+        except (TypeError, ValueError):
+            raise ValueError("workspace policy is invalid") from None
         workspace_slug = validate_slug(
             workspace_slug,
             field="workspace_slug",
         )
         validate_opaque_id(principal_id, field="principal_id")
         async with self._session_factory() as session, session.begin():
+            await _acquire_provisioning_lock(
+                session,
+                integrity_service_namespace=self._integrity_service_namespace,
+                domain="workspace-slug",
+                value=workspace_slug,
+            )
             await _acquire_provisioning_lock(
                 session,
                 integrity_service_namespace=self._integrity_service_namespace,
@@ -718,6 +1178,16 @@ class ManagementStore:
                     )
                 )
             )
+            await session.execute(
+                self._tables.workspace_policies.insert().values(
+                    **self._signed(
+                        "workspace_policy",
+                        workspace_id=workspace_id,
+                        admission_policy=admission_policy.value,
+                        agent_creation_policy=agent_creation_policy.value,
+                    )
+                )
+            )
             await self._audit(
                 session,
                 workspace_id=workspace_id,
@@ -726,28 +1196,32 @@ class ManagementStore:
                 target_kind="workspace",
                 target_id=workspace_id,
             )
-        summaries = await self.list_workspaces(principal_id=principal_id)
+        summaries = await self.list_workspaces(
+            principal_id=principal_id,
+            is_platform_admin=True,
+        )
         return next(item for item in summaries if item.slug == workspace_slug)
 
     async def list_workspaces(
         self,
         *,
         principal_id: str,
+        is_platform_admin: bool = False,
     ) -> tuple[WorkspaceSummary, ...]:
         validate_opaque_id(principal_id, field="principal_id")
         summaries: list[WorkspaceSummary] = []
         async with self._session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(self._tables.workspaces, self._tables.workspace_members.c.role).join(
-                        self._tables.workspace_members,
-                        self._tables.workspaces.c.workspace_id
-                        == self._tables.workspace_members.c.workspace_id,
-                    ).where(
-                        self._tables.workspace_members.c.principal_id == principal_id
-                    )
+            statement = select(self._tables.workspaces)
+            if is_platform_admin is not True:
+                statement = statement.join(
+                    self._tables.workspace_members,
+                    self._tables.workspaces.c.workspace_id
+                    == self._tables.workspace_members.c.workspace_id,
+                ).where(
+                    self._tables.workspace_members.c.principal_id
+                    == principal_id
                 )
-            ).all()
+            rows = (await session.execute(statement)).all()
             for row in rows:
                 self._verify(
                     row,
@@ -756,56 +1230,77 @@ class ManagementStore:
                     slug=row.slug,
                     created_by_principal_id=row.created_by_principal_id,
                 )
-                member = (
-                    await session.execute(
-                        select(self._tables.workspace_members).where(
-                            self._tables.workspace_members.c.workspace_id
-                            == row.workspace_id,
-                            self._tables.workspace_members.c.principal_id == principal_id,
-                        )
-                    )
-                ).one()
-                self._verify(
-                    member,
-                    "workspace_member",
-                    workspace_id=member.workspace_id,
-                    principal_id=member.principal_id,
-                    role=member.role,
+                role = await self._workspace_role(
+                    session,
+                    workspace_id=row.workspace_id,
+                    principal_id=principal_id,
                 )
-                try:
-                    role = WorkspaceRole(member.role)
-                except (TypeError, ValueError):
-                    raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
-                agent_count = (
-                    await session.execute(
-                        select(func.count())
-                        .select_from(self._tables.agent_profiles)
-                        .where(
-                            self._tables.agent_profiles.c.workspace_id == row.workspace_id
-                        )
-                    )
-                ).scalar_one()
-                member_count = (
-                    await session.execute(
-                        select(func.count())
-                        .select_from(self._tables.workspace_members)
-                        .where(
-                            self._tables.workspace_members.c.workspace_id
-                            == row.workspace_id
-                        )
-                    )
-                ).scalar_one()
+                if is_platform_admin is not True and role is None:
+                    raise AuthorizationDenied(_AUTHORIZATION_DENIED)
                 summaries.append(
-                    WorkspaceSummary(
-                        workspace_id=row.workspace_id,
-                        slug=row.slug,
+                    await self._summary(
+                        session,
+                        workspace_row=row,
                         role=role,
-                        agent_count=agent_count,
-                        member_count=member_count,
-                        created_at=row.created_at,
                     )
                 )
         return tuple(sorted(summaries, key=lambda item: item.slug))
+
+    async def update_workspace_policy(
+        self,
+        *,
+        principal_id: str,
+        workspace_slug: str,
+        admission_policy: WorkspaceAdmissionPolicy,
+        agent_creation_policy: WorkspaceAgentCreationPolicy,
+    ) -> WorkspaceSummary:
+        try:
+            admission_policy = WorkspaceAdmissionPolicy(admission_policy)
+            agent_creation_policy = WorkspaceAgentCreationPolicy(
+                agent_creation_policy
+            )
+        except (TypeError, ValueError):
+            raise ValueError("workspace policy is invalid") from None
+        async with self._session_factory() as session, session.begin():
+            access = await self._workspace_access(
+                session,
+                workspace_slug=workspace_slug,
+                principal_id=principal_id,
+            )
+            if access.role not in _WORKSPACE_ADMIN_ROLES:
+                raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+            values = self._signed(
+                "workspace_policy",
+                workspace_id=access.workspace_id,
+                admission_policy=admission_policy.value,
+                agent_creation_policy=agent_creation_policy.value,
+            )
+            await session.execute(
+                pg_insert(self._tables.workspace_policies)
+                .values(**values)
+                .on_conflict_do_update(
+                    index_elements=[
+                        self._tables.workspace_policies.c.workspace_id
+                    ],
+                    set_={
+                        "admission_policy": admission_policy.value,
+                        "agent_creation_policy": agent_creation_policy.value,
+                        "integrity_version": values["integrity_version"],
+                        "integrity_tag": values["integrity_tag"],
+                        "updated_at": func.now(),
+                    },
+                )
+            )
+            await self._audit(
+                session,
+                workspace_id=access.workspace_id,
+                actor_principal_id=principal_id,
+                action="workspace.policy.update",
+                target_kind="workspace",
+                target_id=access.workspace_id,
+            )
+        items = await self.list_workspaces(principal_id=principal_id)
+        return next(item for item in items if item.slug == workspace_slug)
 
     async def create_agent(
         self,
@@ -823,7 +1318,12 @@ class ManagementStore:
                 workspace_slug=workspace_slug,
                 principal_id=principal_id,
             )
-            if access.role not in _WORKSPACE_ADMIN_ROLES:
+            policy = await self._workspace_policy(
+                session,
+                workspace_id=access.workspace_id,
+                for_update=True,
+            )
+            if not self._can_create_agents(access.role, policy):
                 raise AuthorizationDenied(_AUTHORIZATION_DENIED)
             await _acquire_provisioning_lock(
                 session,
@@ -877,6 +1377,16 @@ class ManagementStore:
                     )
                 )
             )
+            await session.execute(
+                self._tables.agent_managers.insert().values(
+                    **self._signed(
+                        "agent_manager",
+                        workspace_id=access.workspace_id,
+                        agent_profile_id=agent_profile_id,
+                        principal_id=principal_id,
+                    )
+                )
+            )
             await self._audit(
                 session,
                 workspace_id=access.workspace_id,
@@ -884,6 +1394,14 @@ class ManagementStore:
                 action="agent.create",
                 target_kind="agent",
                 target_id=agent_profile_id,
+            )
+            await self._audit(
+                session,
+                workspace_id=access.workspace_id,
+                actor_principal_id=principal_id,
+                action="agent.manager.grant",
+                target_kind="principal",
+                target_id=principal_id,
             )
             await self._audit(
                 session,
@@ -1588,6 +2106,7 @@ class ManagementStore:
         target_principal_id: str,
         role: AgentGrantRole | None,
         allow_admin_self_grant: bool,
+        self_grant_confirmed: bool = False,
     ) -> None:
         if role is not None:
             role = AgentGrantRole(role)
@@ -1657,6 +2176,14 @@ class ManagementStore:
                 raise SelfGrantDisabled(
                     "administrator content self-grant is disabled by deployment policy"
                 )
+            if (
+                role is not None
+                and target_principal_id == principal_id
+                and self_grant_confirmed is not True
+            ):
+                raise SelfGrantConfirmationRequired(
+                    "administrator content self-grant requires explicit confirmation"
+                )
             if role is None:
                 if existing is not None:
                     await session.execute(
@@ -1722,12 +2249,16 @@ class ManagementStore:
                 workspace_slug=workspace_slug,
                 principal_id=principal_id,
             )
-            if access.role not in _WORKSPACE_ADMIN_ROLES:
-                raise AuthorizationDenied(_AUTHORIZATION_DENIED)
             agent = await self._agent_row(
                 session,
                 workspace_id=access.workspace_id,
                 agent_slug=agent_slug,
+            )
+            await self._require_agent_manager(
+                session,
+                access=access,
+                agent_profile_id=agent.agent_profile_id,
+                principal_id=principal_id,
             )
             target = (
                 await session.execute(
@@ -1810,6 +2341,93 @@ class ManagementStore:
                 target_id=target_principal_id,
             )
 
+    async def transfer_agent_management(
+        self,
+        *,
+        principal_id: str,
+        workspace_slug: str,
+        agent_slug: str,
+        target_principal_id: str,
+    ) -> None:
+        """Atomically hand explicit agent management to another member."""
+
+        if target_principal_id == principal_id:
+            raise ManagementConflict("target already manages this agent")
+        async with self._session_factory() as session, session.begin():
+            access = await self._workspace_access(
+                session,
+                workspace_slug=workspace_slug,
+                principal_id=principal_id,
+            )
+            agent = await self._agent_row(
+                session,
+                workspace_id=access.workspace_id,
+                agent_slug=agent_slug,
+            )
+            await self._require_agent_manager(
+                session,
+                access=access,
+                agent_profile_id=agent.agent_profile_id,
+                principal_id=principal_id,
+            )
+            target = (
+                await session.execute(
+                    select(self._tables.workspace_members).where(
+                        self._tables.workspace_members.c.workspace_id
+                        == access.workspace_id,
+                        self._tables.workspace_members.c.principal_id
+                        == target_principal_id,
+                    )
+                )
+            ).one_or_none()
+            if target is None:
+                raise ManagementConflict("target must be a workspace member")
+            self._verify(
+                target,
+                "workspace_member",
+                workspace_id=target.workspace_id,
+                principal_id=target.principal_id,
+                role=target.role,
+            )
+            values = self._signed(
+                "agent_manager",
+                workspace_id=access.workspace_id,
+                agent_profile_id=agent.agent_profile_id,
+                principal_id=target_principal_id,
+            )
+            await session.execute(
+                pg_insert(self._tables.agent_managers)
+                .values(**values)
+                .on_conflict_do_update(
+                    index_elements=[
+                        self._tables.agent_managers.c.agent_profile_id,
+                        self._tables.agent_managers.c.principal_id,
+                    ],
+                    set_={
+                        "workspace_id": access.workspace_id,
+                        "integrity_version": values["integrity_version"],
+                        "integrity_tag": values["integrity_tag"],
+                    },
+                )
+            )
+            if access.role not in _WORKSPACE_ADMIN_ROLES:
+                await session.execute(
+                    delete(self._tables.agent_managers).where(
+                        self._tables.agent_managers.c.agent_profile_id
+                        == agent.agent_profile_id,
+                        self._tables.agent_managers.c.principal_id
+                        == principal_id,
+                    )
+                )
+            await self._audit(
+                session,
+                workspace_id=access.workspace_id,
+                actor_principal_id=principal_id,
+                action="agent.manager.transfer",
+                target_kind="principal",
+                target_id=target_principal_id,
+            )
+
     async def list_audit_events(
         self,
         *,
@@ -1868,6 +2486,7 @@ class ManagementStore:
 
 __all__ = [
     "AgentSummary",
+    "EntitlementResolver",
     "InvitationSummary",
     "ManagementConflict",
     "ManagementEvent",
@@ -1875,6 +2494,9 @@ __all__ = [
     "MemberAccess",
     "PrincipalProfile",
     "SelfGrantDisabled",
+    "SelfGrantConfirmationRequired",
+    "WorkspaceEntitlementRequest",
+    "WorkspacePolicy",
     "WorkspaceSummary",
     "content_role_from_name",
     "content_role_name",
