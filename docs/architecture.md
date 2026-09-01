@@ -60,7 +60,7 @@ This is intentionally a session-factory seam rather than a credential-fetcher se
 
 ## Encrypted virtual tree
 
-Each scope has an opaque root object. Directories are objects whose version content is an encrypted manifest of child display names, opaque object identifiers, and kinds. Documents are objects whose immutable versions contain encrypted UTF-8 Markdown.
+Each scope has an opaque root object. Directories are objects whose version content is an encrypted manifest of child display names, opaque object identifiers, and kinds. Documents are objects whose immutable versions contain encrypted UTF-8 Markdown plus compact version metadata: the authenticated committing principal, caller-declared co-author identifiers, and an optional change comment. The metadata is inside the authenticated encrypted payload, so no new plaintext content or attribution index is introduced. Pre-metadata document ciphertext remains readable as legacy Markdown with unavailable attribution.
 
 Resolving `/projects/example.md` therefore requires:
 
@@ -79,11 +79,38 @@ Rows retain the provider and key identifiers required for rotation. The bundled 
 
 Moving ciphertext, a wrapped key, or a version row to another object or scope changes the authenticated context and must fail closed.
 
+## History and provenance
+
+`version_created_at` is the canonical immutable-version timestamp. Current
+list/read payloads also expose the former `updated_at` name as a compatibility
+alias, derived from the same version row rather than a separately sampled
+object timestamp.
+
+History access is split at the capability boundary:
+
+- `memory:history:list` permits bounded, newest-first retained-version metadata;
+- `memory:history:read` permits historical Markdown and an optional unified
+  line diff from `compare_to_version` into the selected version.
+
+Neither action is implied by `memory:read` at the capability layer. A host may
+grant them together through a reader role, as the optional control plane does,
+or issue narrower capabilities. Expired and pruned versions use the same
+unavailable result shape rather than revealing whether a version once existed.
+Because list metadata includes the free-text change comment requested for each
+version, `memory:history:list` is content-adjacent rather than guaranteed
+content-free and should be granted accordingly.
+
+`committed_by` records the `principal_id` from the verified invocation that
+created a version. It proves which authenticated authorization was exercised,
+not which human or agent composed the content. `co_authored_by` is analogous to
+a commit co-author declaration but is deliberately labeled `self_asserted`.
+`change_comment` is optional caller-supplied description, not an identity claim.
+
 ## Concurrency and retries
 
 Object heads are compare-and-swap values. `write`, `append`, and `delete` take an expected document version. One of two writes against the same version may succeed; the other receives a stable version-conflict error.
 
-Mutations also require an idempotency key. The corresponding request fingerprint and result are encrypted. A retry of the same request returns the original result. Reusing the key for a different request fails without applying either request again.
+Mutations also require an idempotency key. The corresponding request fingerprint and result are encrypted. Co-author declarations and the change comment are part of that fingerprint. A retry of the same request returns the original result. Reusing the key for a different request fails without applying either request again.
 
 ## Deletion and retention
 

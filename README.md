@@ -14,7 +14,12 @@ The project is designed around four boundaries:
 - PostgreSQL is injected through an async SQLAlchemy session factory. Standalone users may construct one from a static database URL; hosting platforms may supply their own credential-aware factory.
 - MCP is an adapter. The application service can also be embedded directly in another Python service.
 
-The initial tool surface is intentionally small: list, read, write, append, and delete. Writes use compare-and-swap versions and idempotency keys. Delete denies access immediately and makes encrypted data eligible for hard deletion after its configured retention window. The host must run the packaged janitor; the request-serving process does not schedule cleanup itself.
+The headless tool surface is intentionally small: list, read, history-list,
+history-read, write, append, and delete. History metadata and historical content
+use separate capabilities. Writes use compare-and-swap versions and
+idempotency keys. Delete denies access immediately and makes encrypted data
+eligible for hard deletion after its configured retention window. The host must
+run the packaged janitor; the request-serving process does not schedule cleanup itself.
 
 ## Status
 
@@ -50,6 +55,32 @@ for database setup, security-sensitive configuration, and server startup.
 - `agent_filetree_memory.mcp`: headless MCP tools.
 - `agent_filetree_memory.mcp_app`: an optional current-capability browser and editor.
 - `agent_filetree_memory.web`: the version-matched management API composition and bundled React UI.
+
+## Version history and attribution
+
+Every retained document version has a canonical `version_created_at` timestamp.
+`memory_history_list` returns retained versions newest first without returning
+their Markdown; its metadata includes the caller-supplied change comment, so a
+host should still treat that capability as potentially sensitive.
+`memory_history_read` returns one retained version and can also produce a
+unified line diff by accepting `compare_to_version`. Pagination and retention
+are bounded; history is not an unbounded event log.
+
+Writes and appends may include an optional `change_comment` and up to eight
+opaque `co_authored_by` identifiers. Version responses distinguish the two
+attribution levels:
+
+- `committed_by` identifies the authenticated principal whose verified
+  capability committed the version and carries `verification: "authenticated"`;
+- each `co_authored_by` entry is caller-declared and explicitly carries
+  `verification: "self_asserted"`.
+
+Authenticated here means that principal's authorization was used. It does not
+prove who drafted, typed, or approved the Markdown. The optional change comment
+is also caller-supplied text, not verified attribution. Versions created before
+this metadata format remain readable and return unavailable attribution as
+`null`/empty values. Current list/read payloads retain `updated_at` as a
+compatibility alias for `version_created_at`.
 
 ## Security properties
 

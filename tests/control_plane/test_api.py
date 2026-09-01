@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Annotated
 
 from fastapi import Header, HTTPException
@@ -9,6 +11,13 @@ from agent_filetree_memory.control_plane.api import (
     LocalManagementScope,
     ManagementPrincipal,
     create_management_api,
+)
+from agent_filetree_memory.domain.models import (
+    HistoricalDocument,
+    MemoryAction,
+    MemoryHistoryPage,
+    MemoryVersion,
+    Scope,
 )
 
 
@@ -127,4 +136,98 @@ def test_local_scope_bootstrap_is_explicit_and_idempotent_by_store() -> None:
                 "display_alias": "Agent one",
             },
         ),
+    ]
+
+
+def test_management_history_endpoints_keep_actions_and_attribution_distinct() -> None:
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+
+    class Namespace:
+        def __init__(self) -> None:
+            self.actions: list[MemoryAction] = []
+
+        async def resolve_or_create(self, *, action: MemoryAction, **_kwargs):
+            self.actions.append(action)
+            return SimpleNamespace(scope=Scope("workspace-1", "agent-1"))
+
+    class Memory:
+        async def list_history(self, invocation, path, **_kwargs):
+            invocation.require(MemoryAction.HISTORY_LIST)
+            return MemoryHistoryPage(
+                path=path,
+                current_version=2,
+                versions=(
+                    MemoryVersion(
+                        version=2,
+                        version_created_at=now,
+                        committed_by_principal_id="oidc:tenant:person",
+                        co_authored_by=("agent:claude",),
+                        change_comment="Explain the revision",
+                    ),
+                ),
+            )
+
+        async def read_history(
+            self,
+            invocation,
+            path,
+            version,
+            *,
+            compare_to_version=None,
+        ):
+            invocation.require(MemoryAction.HISTORY_READ)
+            return HistoricalDocument(
+                path=path,
+                content="# Version two",
+                version=version,
+                version_created_at=now,
+                committed_by_principal_id="oidc:tenant:person",
+                co_authored_by=("agent:claude",),
+                change_comment="Explain the revision",
+                compared_to_version=compare_to_version,
+                diff="--- v1\n+++ v2\n",
+            )
+
+    management = _ManagementStore()
+    namespace = Namespace()
+    app = create_management_api(
+        management_store=management,
+        namespace_store=namespace,
+        memory_service=Memory(),
+        principal_dependency=_principal,
+        allow_admin_self_grant=False,
+    )
+    headers = {"Authorization": "Bearer verified"}
+    base = "/workspaces/team/agents/assistant/memory/history"
+
+    with TestClient(app) as client:
+        listed = client.get(base, params={"path": "/notes.md"}, headers=headers)
+        read = client.get(
+            base + "/document",
+            params={
+                "path": "/notes.md",
+                "version": 2,
+                "compare_to_version": 1,
+            },
+            headers=headers,
+        )
+
+    assert listed.status_code == 200
+    version = listed.json()["versions"][0]
+    assert version["version_created_at"] == now.isoformat()
+    assert version["committed_by"] == {
+        "principal_id": "oidc:tenant:person",
+        "verification": "authenticated",
+    }
+    assert version["co_authored_by"] == [
+        {"identifier": "agent:claude", "verification": "self_asserted"}
+    ]
+    assert version["change_comment"] == "Explain the revision"
+    assert read.status_code == 200
+    assert read.json()["content"] == "# Version two"
+    assert read.json()["change_comment"] == "Explain the revision"
+    assert read.json()["compared_to_version"] == 1
+    assert namespace.actions == [
+        MemoryAction.HISTORY_LIST,
+        MemoryAction.HISTORY_READ,
     ]

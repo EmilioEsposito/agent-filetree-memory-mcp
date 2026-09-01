@@ -139,7 +139,14 @@ class AgentGrantRole(StrEnum):
     ADMIN = "admin"
 
 
-_READER_ACTIONS = frozenset({MemoryAction.LIST, MemoryAction.READ})
+_READER_ACTIONS = frozenset(
+    {
+        MemoryAction.LIST,
+        MemoryAction.READ,
+        MemoryAction.HISTORY_LIST,
+        MemoryAction.HISTORY_READ,
+    }
+)
 _EDITOR_ACTIONS = _READER_ACTIONS | frozenset(
     {MemoryAction.WRITE, MemoryAction.APPEND}
 )

@@ -119,12 +119,22 @@ def test_namespace_metadata_is_schema_bound_and_separates_identity_metadata() ->
 @pytest.mark.parametrize(
     ("role", "allowed"),
     [
-        (AgentGrantRole.READER, {MemoryAction.LIST, MemoryAction.READ}),
+        (
+            AgentGrantRole.READER,
+            {
+                MemoryAction.LIST,
+                MemoryAction.READ,
+                MemoryAction.HISTORY_LIST,
+                MemoryAction.HISTORY_READ,
+            },
+        ),
         (
             AgentGrantRole.EDITOR,
             {
                 MemoryAction.LIST,
                 MemoryAction.READ,
+                MemoryAction.HISTORY_LIST,
+                MemoryAction.HISTORY_READ,
                 MemoryAction.WRITE,
                 MemoryAction.APPEND,
             },
@@ -134,6 +144,8 @@ def test_namespace_metadata_is_schema_bound_and_separates_identity_metadata() ->
             {
                 MemoryAction.LIST,
                 MemoryAction.READ,
+                MemoryAction.HISTORY_LIST,
+                MemoryAction.HISTORY_READ,
                 MemoryAction.WRITE,
                 MemoryAction.APPEND,
                 MemoryAction.DELETE,

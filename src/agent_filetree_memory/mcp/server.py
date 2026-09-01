@@ -16,10 +16,14 @@ from ..ports.capabilities import InvocationResolver
 from .payloads import (
     DeletePayload,
     DocumentPayload,
+    HistoricalDocumentPayload,
+    MemoryHistoryPayload,
     MemoryListPayload,
     WritePayload,
     delete_payload,
     document_payload,
+    historical_document_payload,
+    history_payload,
     list_payload,
     write_payload,
 )
@@ -95,6 +99,90 @@ OptionalExpectedVersion = Annotated[
         }
     ),
 ]
+HistoryLimit = Annotated[
+    Any,
+    WithJsonSchema(
+        {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum retained versions returned in this page.",
+        }
+    ),
+]
+HistoryVersion = Annotated[
+    Any,
+    WithJsonSchema(
+        {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Retained immutable document version.",
+        }
+    ),
+]
+BeforeHistoryVersion = Annotated[
+    Any,
+    WithJsonSchema(
+        {
+            "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
+            "description": (
+                "Exclusive pagination cursor; return retained versions lower "
+                "than this version."
+            ),
+        }
+    ),
+]
+CompareToHistoryVersion = Annotated[
+    Any,
+    WithJsonSchema(
+        {
+            "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
+            "description": (
+                "Optional retained source version for a unified diff into the "
+                "selected version."
+            ),
+        }
+    ),
+]
+CoAuthorClaims = Annotated[
+    Any,
+    WithJsonSchema(
+        {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255,
+                "pattern": r"^[A-Za-z0-9][A-Za-z0-9._~:-]{0,254}$",
+            },
+            "description": (
+                "Optional opaque co-author identifiers. These are caller-declared "
+                "and are returned as self-asserted, never authenticated."
+            ),
+        }
+    ),
+]
+ChangeComment = Annotated[
+    Any,
+    WithJsonSchema(
+        {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                },
+                {"type": "null"},
+            ],
+            "description": (
+                "Optional commit-like comment describing this version. "
+                "It is caller-supplied text, not verified attribution."
+            ),
+        }
+    ),
+]
 
 _READ_ONLY = ToolAnnotations(
     readOnlyHint=True,
@@ -128,14 +216,42 @@ _HEADLESS_TOOL_BOUNDARIES = {
         frozenset({"path"}),
         frozenset({"path"}),
     ),
+    "memory_history_list": (
+        MemoryAction.HISTORY_LIST,
+        frozenset({"path", "limit", "before_version"}),
+        frozenset({"path"}),
+    ),
+    "memory_history_read": (
+        MemoryAction.HISTORY_READ,
+        frozenset({"path", "version", "compare_to_version"}),
+        frozenset({"path", "version"}),
+    ),
     "memory_write": (
         MemoryAction.WRITE,
-        frozenset({"path", "content", "idempotency_key", "expected_version"}),
+        frozenset(
+            {
+                "path",
+                "content",
+                "idempotency_key",
+                "expected_version",
+                "co_authored_by",
+                "change_comment",
+            }
+        ),
         frozenset({"path", "content", "idempotency_key"}),
     ),
     "memory_append": (
         MemoryAction.APPEND,
-        frozenset({"path", "content", "expected_version", "idempotency_key"}),
+        frozenset(
+            {
+                "path",
+                "content",
+                "expected_version",
+                "idempotency_key",
+                "co_authored_by",
+                "change_comment",
+            }
+        ),
         frozenset({"path", "content", "expected_version", "idempotency_key"}),
     ),
     "memory_delete": (
@@ -210,11 +326,15 @@ verified agent invocation. Workspace, authenticated principal, and stable agent
 profile identity always come from the trusted invocation resolver; never ask a
 user or model to provide those identifiers as tool arguments.
 
-Use memory_list and memory_read for discovery. memory_write creates a new path
+Use memory_list and memory_read for discovery. memory_history_list requires its
+own metadata capability; memory_history_read separately authorizes retained old
+content and optional line diffs. memory_write creates a new path
 when expected_version is omitted and replaces an existing document only with
 its exact active version. memory_append and memory_delete also require exact
-active versions. Reuse the same idempotency key only when retrying the identical
-mutation.
+active versions. Writes and appends may include a change_comment and declared
+co_authored_by identifiers; those declarations are self-asserted, while the
+committing principal comes only from verified context. Reuse the same
+idempotency key only when retrying the identical mutation.
 """
 
 
@@ -345,6 +465,56 @@ def create_mcp_server(
         return document_payload(snapshot)
 
     @mcp.tool(
+        name="memory_history_list",
+        title="List retained memory versions",
+        annotations=_READ_ONLY,
+    )
+    async def memory_history_list(
+        ctx: Context,
+        path: MemoryPath,
+        limit: HistoryLimit = 20,
+        before_version: BeforeHistoryVersion = None,
+    ) -> MemoryHistoryPayload:
+        """List retained timestamps, attribution, and comments without Markdown.
+
+        Change comments are caller-supplied free text and may themselves be
+        sensitive even though document content is not returned.
+        """
+        invocation = await _verified_invocation(
+            invocation_resolver, ctx, MemoryAction.HISTORY_LIST
+        )
+        page = await service.list_history(
+            invocation,
+            path,
+            limit=limit,
+            before_version=before_version,
+        )
+        return history_payload(page)
+
+    @mcp.tool(
+        name="memory_history_read",
+        title="Read or compare a retained memory version",
+        annotations=_READ_ONLY,
+    )
+    async def memory_history_read(
+        ctx: Context,
+        path: MemoryPath,
+        version: HistoryVersion,
+        compare_to_version: CompareToHistoryVersion = None,
+    ) -> HistoricalDocumentPayload:
+        """Read one retained version and optionally diff another version into it."""
+        invocation = await _verified_invocation(
+            invocation_resolver, ctx, MemoryAction.HISTORY_READ
+        )
+        document = await service.read_history(
+            invocation,
+            path,
+            version,
+            compare_to_version=compare_to_version,
+        )
+        return historical_document_payload(document)
+
+    @mcp.tool(
         name="memory_write",
         title="Create or replace agent memory",
         annotations=_WRITE,
@@ -355,6 +525,8 @@ def create_mcp_server(
         content: WriteMarkdownContent,
         idempotency_key: IdempotencyKey,
         expected_version: OptionalExpectedVersion = None,
+        co_authored_by: CoAuthorClaims = (),
+        change_comment: ChangeComment = None,
     ) -> WritePayload:
         """Create a new document or CAS-replace an existing document.
 
@@ -371,6 +543,8 @@ def create_mcp_server(
             content,
             expected_version=expected_version,
             idempotency_key=idempotency_key,
+            co_authored_by=co_authored_by,
+            change_comment=change_comment,
         )
         return write_payload(result)
 
@@ -385,6 +559,8 @@ def create_mcp_server(
         content: AppendMarkdownContent,
         expected_version: ExpectedVersion,
         idempotency_key: IdempotencyKey,
+        co_authored_by: CoAuthorClaims = (),
+        change_comment: ChangeComment = None,
     ) -> WritePayload:
         """Append Markdown using exact-version CAS and an idempotency key."""
         invocation = await _verified_invocation(
@@ -396,6 +572,8 @@ def create_mcp_server(
             content,
             expected_version=expected_version,
             idempotency_key=idempotency_key,
+            co_authored_by=co_authored_by,
+            change_comment=change_comment,
         )
         return write_payload(result)
 

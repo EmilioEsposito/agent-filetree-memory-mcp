@@ -19,7 +19,7 @@ uv build
 uv venv /tmp/agent-filetree-memory-wheel
 uv pip install \
   --python /tmp/agent-filetree-memory-wheel/bin/python \
-  'dist/agent_filetree_memory_mcp-0.3.0-py3-none-any.whl[all]'
+  'dist/agent_filetree_memory_mcp-0.4.0-py3-none-any.whl[all]'
 ```
 
 ## Database prerequisite
@@ -63,6 +63,11 @@ The static capability is still short-lived and is reverified on every tool
 call. This launcher is suitable for a locally supervised or per-session
 process. Long-running hosted services should inject a request-aware invocation
 resolver instead of relying on one environment-provided token.
+
+The pre-issued token must name every action the process should expose. Retained
+version metadata and historical Markdown are independently authorized as
+`memory:history:list` and `memory:history:read`; neither is implied by
+`memory:read`.
 
 Start the stdio process only after the migration and configuration are in place:
 

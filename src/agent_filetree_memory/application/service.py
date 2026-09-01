@@ -12,8 +12,10 @@ from ..domain.errors import AuthorizationDenied
 from ..domain.models import (
     DeleteResult,
     DocumentSnapshot,
+    HistoricalDocument,
     MemoryAction,
     MemoryEntry,
+    MemoryHistoryPage,
     VerifiedInvocation,
     WriteResult,
 )
@@ -23,6 +25,9 @@ from ..ports.store import MemoryStore
 _DEFAULT_MAX_CONTENT_BYTES = 1024 * 1024
 _DEFAULT_MAX_APPEND_BYTES = 256 * 1024
 _DEFAULT_MAX_IMPORT_DOCUMENTS = 1_000
+_DEFAULT_MAX_HISTORY_PAGE_SIZE = 100
+_DEFAULT_MAX_CO_AUTHORS = 8
+_DEFAULT_MAX_CHANGE_COMMENT_BYTES = 2_048
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~:-]{0,254}$")
 
 
@@ -41,6 +46,9 @@ class MemoryService:
         max_content_bytes: int = _DEFAULT_MAX_CONTENT_BYTES,
         max_append_bytes: int = _DEFAULT_MAX_APPEND_BYTES,
         max_import_documents: int = _DEFAULT_MAX_IMPORT_DOCUMENTS,
+        max_history_page_size: int = _DEFAULT_MAX_HISTORY_PAGE_SIZE,
+        max_co_authors: int = _DEFAULT_MAX_CO_AUTHORS,
+        max_change_comment_bytes: int = _DEFAULT_MAX_CHANGE_COMMENT_BYTES,
         logger: logging.Logger | None = None,
     ) -> None:
         if not isinstance(max_content_bytes, int) or isinstance(
@@ -59,10 +67,24 @@ class MemoryService:
             or max_import_documents <= 0
         ):
             raise ValueError("max_import_documents must be a positive integer")
+        for name, value in (
+            ("max_history_page_size", max_history_page_size),
+            ("max_co_authors", max_co_authors),
+            ("max_change_comment_bytes", max_change_comment_bytes),
+        ):
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be a positive integer")
         self._store = store
         self._max_content_bytes = max_content_bytes
         self._max_append_bytes = max_append_bytes
         self._max_import_documents = max_import_documents
+        self._max_history_page_size = max_history_page_size
+        self._max_co_authors = max_co_authors
+        self._max_change_comment_bytes = max_change_comment_bytes
         self._logger = logger or logging.getLogger(__name__)
 
     async def list(
@@ -93,6 +115,59 @@ class MemoryService:
         self._completed(MemoryAction.READ)
         return result
 
+    async def list_history(
+        self,
+        invocation: VerifiedInvocation,
+        path: str,
+        *,
+        limit: int = 20,
+        before_version: int | None = None,
+    ) -> MemoryHistoryPage:
+        self._authorize(invocation, MemoryAction.HISTORY_LIST)
+        normalized = normalize_memory_path(path, allow_root=False)
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= self._max_history_page_size
+        ):
+            raise ValueError("history limit is outside the configured range")
+        if before_version is not None:
+            self._validate_expected_version(before_version, allow_none=False)
+        result = await self._store.list_history(
+            invocation.scope,
+            normalized,
+            limit=limit,
+            before_version=before_version,
+            invocation_id=invocation.invocation_id,
+            principal_id=invocation.principal_id,
+        )
+        self._completed(MemoryAction.HISTORY_LIST)
+        return result
+
+    async def read_history(
+        self,
+        invocation: VerifiedInvocation,
+        path: str,
+        version: int,
+        *,
+        compare_to_version: int | None = None,
+    ) -> HistoricalDocument:
+        self._authorize(invocation, MemoryAction.HISTORY_READ)
+        normalized = normalize_memory_path(path, allow_root=False)
+        self._validate_expected_version(version, allow_none=False)
+        if compare_to_version is not None:
+            self._validate_expected_version(compare_to_version, allow_none=False)
+        result = await self._store.read_history(
+            invocation.scope,
+            normalized,
+            version,
+            compare_to_version=compare_to_version,
+            invocation_id=invocation.invocation_id,
+            principal_id=invocation.principal_id,
+        )
+        self._completed(MemoryAction.HISTORY_READ)
+        return result
+
     async def write(
         self,
         invocation: VerifiedInvocation,
@@ -101,6 +176,8 @@ class MemoryService:
         *,
         expected_version: int | None = None,
         idempotency_key: str,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
     ) -> WriteResult:
         self._authorize(invocation, MemoryAction.WRITE)
         normalized = normalize_memory_path(path, allow_root=False)
@@ -109,6 +186,8 @@ class MemoryService:
         )
         self._validate_expected_version(expected_version, allow_none=True)
         validated_key = self._validate_idempotency_key(idempotency_key)
+        validated_co_authors = self._validate_co_authors(co_authored_by)
+        validated_comment = self._validate_change_comment(change_comment)
         result = await self._store.write(
             invocation.scope,
             normalized,
@@ -117,6 +196,8 @@ class MemoryService:
             idempotency_key=validated_key,
             invocation_id=invocation.invocation_id,
             principal_id=invocation.principal_id,
+            co_authored_by=validated_co_authors,
+            change_comment=validated_comment,
         )
         self._completed(MemoryAction.WRITE)
         return result
@@ -129,6 +210,8 @@ class MemoryService:
         *,
         expected_version: int,
         idempotency_key: str,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
     ) -> WriteResult:
         self._authorize(invocation, MemoryAction.APPEND)
         normalized = normalize_memory_path(path, allow_root=False)
@@ -137,6 +220,8 @@ class MemoryService:
         )
         self._validate_expected_version(expected_version, allow_none=False)
         validated_key = self._validate_idempotency_key(idempotency_key)
+        validated_co_authors = self._validate_co_authors(co_authored_by)
+        validated_comment = self._validate_change_comment(change_comment)
         result = await self._store.append(
             invocation.scope,
             normalized,
@@ -145,6 +230,8 @@ class MemoryService:
             idempotency_key=validated_key,
             invocation_id=invocation.invocation_id,
             principal_id=invocation.principal_id,
+            co_authored_by=validated_co_authors,
+            change_comment=validated_comment,
         )
         self._completed(MemoryAction.APPEND)
         return result
@@ -282,6 +369,35 @@ class MemoryService:
     def _validate_idempotency_key(value: str) -> str:
         if not isinstance(value, str) or not _IDEMPOTENCY_KEY.fullmatch(value):
             raise ValueError("idempotency_key must be an opaque identifier")
+        return value
+
+    def _validate_co_authors(self, values: Sequence[str]) -> tuple[str, ...]:
+        if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+            raise ValueError("co_authored_by must contain opaque identifiers")
+        if len(values) > self._max_co_authors:
+            raise ValueError("co_authored_by exceeds the configured limit")
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if not isinstance(value, str) or not _IDEMPOTENCY_KEY.fullmatch(value):
+                raise ValueError("co_authored_by must contain opaque identifiers")
+            if value in seen:
+                raise ValueError("co_authored_by contains duplicate identifiers")
+            result.append(value)
+            seen.add(value)
+        return tuple(result)
+
+    def _validate_change_comment(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip() or "\x00" in value:
+            raise ValueError("change_comment must be valid non-empty text")
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("change_comment must be valid non-empty text") from None
+        if len(encoded) > self._max_change_comment_bytes:
+            raise ValueError("change_comment exceeds the configured limit")
         return value
 
     def _completed(self, action: MemoryAction) -> None:

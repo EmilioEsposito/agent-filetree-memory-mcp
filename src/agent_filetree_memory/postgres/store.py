@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import difflib
 import hashlib
 import hmac
 import json
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, delete, insert, select, text, update
+from sqlalchemy import and_, delete, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +28,11 @@ from ..domain.errors import (
 from ..domain.models import (
     DeleteResult,
     DocumentSnapshot,
+    HistoricalDocument,
+    MemoryAction,
     MemoryEntry,
+    MemoryHistoryPage,
+    MemoryVersion,
     Scope,
     WriteResult,
     validate_opaque_id,
@@ -122,6 +127,123 @@ class _ManifestEntry:
 class _IdempotencyReplay:
     fingerprint: str
     result: Mapping[str, Any]
+
+
+_DOCUMENT_FRAME_PREFIX = b"AFMD\x00\x01"
+_DOCUMENT_METADATA_LENGTH_BYTES = 4
+_MAX_CO_AUTHORS = 8
+_MAX_CHANGE_COMMENT_BYTES = 2_048
+
+
+def _validate_co_authors(values: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ValueError("co_authored_by must contain opaque identifiers")
+    if len(values) > _MAX_CO_AUTHORS:
+        raise ValueError("co_authored_by exceeds the configured limit")
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        try:
+            validate_opaque_id(value, field="co_author_id")
+        except (TypeError, ValueError):
+            raise ValueError(
+                "co_authored_by must contain opaque identifiers"
+            ) from None
+        if value in seen:
+            raise ValueError("co_authored_by contains duplicate identifiers")
+        result.append(value)
+        seen.add(value)
+    return tuple(result)
+
+
+def _validate_change_comment(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        raise ValueError("change_comment must be valid non-empty text")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("change_comment must be valid non-empty text") from None
+    if len(encoded) > _MAX_CHANGE_COMMENT_BYTES:
+        raise ValueError("change_comment exceeds the configured limit")
+    return value
+
+
+def _encode_document_payload(
+    raw: bytes,
+    *,
+    committed_by_principal_id: str | None,
+    co_authored_by: Sequence[str],
+    change_comment: str | None,
+) -> bytes:
+    if committed_by_principal_id is not None:
+        validate_opaque_id(
+            committed_by_principal_id,
+            field="committed_by_principal_id",
+        )
+    co_authors = _validate_co_authors(co_authored_by)
+    comment = _validate_change_comment(change_comment)
+    metadata = json.dumps(
+        {
+            "co_authored_by": list(co_authors),
+            "committed_by_principal_id": committed_by_principal_id,
+            "change_comment": comment,
+            "format": 1,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    return (
+        _DOCUMENT_FRAME_PREFIX
+        + len(metadata).to_bytes(_DOCUMENT_METADATA_LENGTH_BYTES, "big")
+        + metadata
+        + raw
+    )
+
+
+def _decode_document_payload(
+    framed: bytes,
+) -> tuple[bytes, str | None, tuple[str, ...], str | None]:
+    if not framed.startswith(_DOCUMENT_FRAME_PREFIX):
+        # Versions written before provenance framing contain raw Markdown.
+        return framed, None, (), None
+    metadata_start = len(_DOCUMENT_FRAME_PREFIX) + _DOCUMENT_METADATA_LENGTH_BYTES
+    if len(framed) < metadata_start:
+        raise IntegrityFailure("encrypted document metadata is malformed")
+    metadata_length = int.from_bytes(
+        framed[len(_DOCUMENT_FRAME_PREFIX) : metadata_start], "big"
+    )
+    metadata_end = metadata_start + metadata_length
+    if metadata_length < 2 or metadata_end > len(framed):
+        raise IntegrityFailure("encrypted document metadata is malformed")
+    try:
+        metadata = json.loads(framed[metadata_start:metadata_end].decode("ascii"))
+        if not isinstance(metadata, dict) or set(metadata) != {
+            "co_authored_by",
+            "committed_by_principal_id",
+            "change_comment",
+            "format",
+        }:
+            raise ValueError
+        if (
+            not isinstance(metadata["format"], int)
+            or isinstance(metadata["format"], bool)
+            or metadata["format"] != 1
+        ):
+            raise ValueError
+        committed_by = metadata["committed_by_principal_id"]
+        if committed_by is not None:
+            validate_opaque_id(committed_by, field="committed_by_principal_id")
+        raw_co_authors = metadata["co_authored_by"]
+        if not isinstance(raw_co_authors, list):
+            raise ValueError
+        co_authors = _validate_co_authors(raw_co_authors)
+        change_comment = _validate_change_comment(metadata["change_comment"])
+    except (TypeError, UnicodeError, ValueError):
+        raise IntegrityFailure("encrypted document metadata is malformed") from None
+    return framed[metadata_end:], committed_by, co_authors, change_comment
 
 
 def _now() -> datetime:
@@ -299,12 +421,34 @@ class PostgresMemoryStore:
                 object_ids = [entry.object_id for entry in manifest]
                 rows_by_id: dict[str, Mapping[str, Any]] = {}
                 if object_ids:
+                    objects = self.tables.objects
+                    versions = self.tables.versions
                     rows = (
                         await session.execute(
-                            select(self.tables.objects).where(
-                                _scope_predicate(self.tables.objects, scope),
-                                self.tables.objects.c.object_id.in_(object_ids),
-                                self.tables.objects.c.lifecycle == "active",
+                            select(
+                                objects,
+                                versions.c.created_at.label(
+                                    "version_created_at"
+                                ),
+                            )
+                            .select_from(
+                                objects.join(
+                                    versions,
+                                    and_(
+                                        objects.c.workspace_id
+                                        == versions.c.workspace_id,
+                                        objects.c.agent_profile_id
+                                        == versions.c.agent_profile_id,
+                                        objects.c.object_id == versions.c.object_id,
+                                        objects.c.current_version
+                                        == versions.c.version,
+                                    ),
+                                )
+                            )
+                            .where(
+                                _scope_predicate(objects, scope),
+                                objects.c.object_id.in_(object_ids),
+                                objects.c.lifecycle == "active",
                             )
                         )
                     ).mappings()
@@ -325,7 +469,7 @@ class PostgresMemoryStore:
                             path=child_path,
                             kind=item.kind,
                             version=row["current_version"],
-                            updated_at=row["updated_at"],
+                            version_created_at=row["version_created_at"],
                         )
                     )
                 await self._audit(
@@ -368,6 +512,9 @@ class PostgresMemoryStore:
                 raw, version_created = await self._load_current_payload(
                     session, scope, resolved
                 )
+                raw, committed_by, co_authors, change_comment = (
+                    _decode_document_payload(raw)
+                )
                 try:
                     content = raw.decode("utf-8")
                 except UnicodeDecodeError as exc:
@@ -386,12 +533,192 @@ class PostgresMemoryStore:
                     content=content,
                     version=resolved["current_version"],
                     created_at=resolved["created_at"],
-                    updated_at=version_created,
+                    version_created_at=version_created,
+                    committed_by_principal_id=committed_by,
+                    co_authored_by=co_authors,
+                    change_comment=change_comment,
                 )
         except Exception as exc:
             await self._audit_failure(
                 scope,
                 "memory:read",
+                exc,
+                invocation_id=invocation_id,
+                principal_id=principal_id,
+            )
+            raise
+
+    async def list_history(
+        self,
+        scope: Scope,
+        path: str,
+        *,
+        limit: int,
+        before_version: int | None = None,
+        invocation_id: str | None = None,
+        principal_id: str | None = None,
+    ) -> MemoryHistoryPage:
+        normalized = self._normalize_path(path, allow_root=False)
+        self._validate_history_inputs(limit, before_version)
+        self._validate_optional_invocation(invocation_id)
+        self._validate_optional_principal(principal_id)
+        try:
+            await self._consume_rate(scope)
+            async with self.runtime.session() as session, session.begin():
+                resolved = await self._resolve(session, scope, normalized)
+                if resolved is None or resolved["object_kind"] != "document":
+                    raise NotFoundOrDenied("memory object is unavailable")
+                table = self.tables.versions
+                current_version = int(resolved["current_version"])
+                now = _now()
+                statement = (
+                    select(table)
+                    .where(
+                        _object_predicate(table, scope, resolved["object_id"]),
+                        or_(
+                            table.c.version == current_version,
+                            table.c.purge_after > now,
+                        ),
+                    )
+                    .order_by(table.c.version.desc())
+                    .limit(limit + 1)
+                )
+                if before_version is not None:
+                    statement = statement.where(table.c.version < before_version)
+                rows = list((await session.execute(statement)).mappings())
+                has_more = len(rows) > limit
+                selected_rows = rows[:limit]
+                versions: list[MemoryVersion] = []
+                for row in selected_rows:
+                    framed = await self._decrypt_row(
+                        row,
+                        scope,
+                        purpose="memory-document",
+                        object_id=resolved["object_id"],
+                        object_kind="document",
+                        version=int(row["version"]),
+                    )
+                    _, committed_by, co_authors, change_comment = (
+                        _decode_document_payload(framed)
+                    )
+                    versions.append(
+                        MemoryVersion(
+                            version=int(row["version"]),
+                            version_created_at=row["created_at"],
+                            committed_by_principal_id=committed_by,
+                            co_authored_by=co_authors,
+                            change_comment=change_comment,
+                        )
+                    )
+                await self._audit(
+                    session,
+                    scope,
+                    MemoryAction.HISTORY_LIST.value,
+                    "succeeded",
+                    invocation_id=invocation_id,
+                    principal_id=principal_id,
+                    object_id=resolved["object_id"],
+                )
+                return MemoryHistoryPage(
+                    path=normalized,
+                    current_version=current_version,
+                    versions=tuple(versions),
+                    next_before_version=(
+                        versions[-1].version if has_more and versions else None
+                    ),
+                )
+        except Exception as exc:
+            await self._audit_failure(
+                scope,
+                MemoryAction.HISTORY_LIST.value,
+                exc,
+                invocation_id=invocation_id,
+                principal_id=principal_id,
+            )
+            raise
+
+    async def read_history(
+        self,
+        scope: Scope,
+        path: str,
+        version: int,
+        *,
+        compare_to_version: int | None = None,
+        invocation_id: str | None = None,
+        principal_id: str | None = None,
+    ) -> HistoricalDocument:
+        normalized = self._normalize_path(path, allow_root=False)
+        self._validate_required_version(version)
+        if compare_to_version is not None:
+            self._validate_required_version(compare_to_version)
+        self._validate_optional_invocation(invocation_id)
+        self._validate_optional_principal(principal_id)
+        try:
+            await self._consume_rate(scope)
+            async with self.runtime.session() as session, session.begin():
+                resolved = await self._resolve(session, scope, normalized)
+                if resolved is None or resolved["object_kind"] != "document":
+                    raise NotFoundOrDenied("memory object is unavailable")
+                row = await self._load_available_history_version(
+                    session,
+                    scope,
+                    resolved,
+                    version,
+                )
+                content, committed_by, co_authors, change_comment = (
+                    await self._decode_version_document(
+                        row,
+                        scope,
+                        object_id=resolved["object_id"],
+                        version=version,
+                    )
+                )
+                diff: str | None = None
+                if compare_to_version is not None:
+                    comparison_row = await self._load_available_history_version(
+                        session,
+                        scope,
+                        resolved,
+                        compare_to_version,
+                    )
+                    comparison, _, _, _ = await self._decode_version_document(
+                        comparison_row,
+                        scope,
+                        object_id=resolved["object_id"],
+                        version=compare_to_version,
+                    )
+                    diff = "".join(
+                        difflib.unified_diff(
+                            comparison.splitlines(keepends=True),
+                            content.splitlines(keepends=True),
+                            fromfile=f"{normalized}@v{compare_to_version}",
+                            tofile=f"{normalized}@v{version}",
+                        )
+                    )
+                await self._audit(
+                    session,
+                    scope,
+                    MemoryAction.HISTORY_READ.value,
+                    "succeeded",
+                    invocation_id=invocation_id,
+                    principal_id=principal_id,
+                    object_id=resolved["object_id"],
+                )
+                return HistoricalDocument(
+                    path=normalized,
+                    content=content,
+                    version=version,
+                    version_created_at=row["created_at"],
+                    committed_by_principal_id=committed_by,
+                    co_authored_by=co_authors,
+                    change_comment=change_comment,
+                    compared_to_version=compare_to_version,
+                    diff=diff,
+                )
+        except Exception as exc:
+            await self._audit_failure(
+                scope,
+                MemoryAction.HISTORY_READ.value,
                 exc,
                 invocation_id=invocation_id,
                 principal_id=principal_id,
@@ -408,17 +735,27 @@ class PostgresMemoryStore:
         idempotency_key: str,
         invocation_id: str,
         principal_id: str | None = None,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
     ) -> WriteResult:
         normalized = self._normalize_path(path, allow_root=False)
         raw = self._validate_content(content)
         self._validate_write_inputs(expected_version, idempotency_key, invocation_id)
         self._validate_optional_principal(principal_id)
-        fingerprint = _fingerprint(
-            "write",
-            path=normalized,
-            content_sha256=hashlib.sha256(raw).hexdigest(),
-            expected_version=expected_version,
-        )
+        co_authors = _validate_co_authors(co_authored_by)
+        validated_comment = _validate_change_comment(change_comment)
+        fingerprint_values: dict[str, object] = {
+            "path": normalized,
+            "content_sha256": hashlib.sha256(raw).hexdigest(),
+            "expected_version": expected_version,
+        }
+        # Preserve the pre-metadata fingerprint for ordinary retries while
+        # still binding any supplied version metadata to the idempotency key.
+        if co_authors:
+            fingerprint_values["co_authored_by"] = list(co_authors)
+        if validated_comment is not None:
+            fingerprint_values["change_comment"] = validated_comment
+        fingerprint = _fingerprint("write", **fingerprint_values)
         try:
             await self._consume_rate(scope)
             async with self.runtime.session() as session, session.begin():
@@ -447,6 +784,9 @@ class PostgresMemoryStore:
                     normalized,
                     raw,
                     expected_version=expected_version,
+                    committed_by_principal_id=principal_id,
+                    co_authored_by=co_authors,
+                    change_comment=validated_comment,
                 )
                 await self._store_idempotency(
                     session,
@@ -485,6 +825,8 @@ class PostgresMemoryStore:
         idempotency_key: str,
         invocation_id: str,
         principal_id: str | None = None,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
     ) -> WriteResult:
         normalized = self._normalize_path(path, allow_root=False)
         appended = self._validate_content(content, enforce_document_limit=False)
@@ -492,12 +834,18 @@ class PostgresMemoryStore:
         validate_opaque_id(idempotency_key, field="idempotency_key")
         validate_opaque_id(invocation_id, field="invocation_id")
         self._validate_optional_principal(principal_id)
-        fingerprint = _fingerprint(
-            "append",
-            path=normalized,
-            content_sha256=hashlib.sha256(appended).hexdigest(),
-            expected_version=expected_version,
-        )
+        co_authors = _validate_co_authors(co_authored_by)
+        validated_comment = _validate_change_comment(change_comment)
+        fingerprint_values: dict[str, object] = {
+            "path": normalized,
+            "content_sha256": hashlib.sha256(appended).hexdigest(),
+            "expected_version": expected_version,
+        }
+        if co_authors:
+            fingerprint_values["co_authored_by"] = list(co_authors)
+        if validated_comment is not None:
+            fingerprint_values["change_comment"] = validated_comment
+        fingerprint = _fingerprint("append", **fingerprint_values)
         try:
             await self._consume_rate(scope)
             async with self.runtime.session() as session, session.begin():
@@ -526,11 +874,19 @@ class PostgresMemoryStore:
                 if resolved["current_version"] != expected_version:
                     raise VersionConflict("document version does not match")
                 current, _ = await self._load_current_payload(session, scope, resolved)
+                current, _, _, _ = _decode_document_payload(current)
                 combined = current + appended
                 if len(combined) > self.config.max_document_bytes:
                     raise QuotaExceeded("document quota would be exceeded")
                 result = await self._replace_document(
-                    session, scope, normalized, resolved, combined
+                    session,
+                    scope,
+                    normalized,
+                    resolved,
+                    combined,
+                    committed_by_principal_id=principal_id,
+                    co_authored_by=co_authors,
+                    change_comment=validated_comment,
                 )
                 await self._store_idempotency(
                     session,
@@ -772,6 +1128,18 @@ class PostgresMemoryStore:
         if isinstance(version, bool) or not isinstance(version, int) or version < 1:
             raise ValueError("expected_version must be a positive integer")
 
+    def _validate_history_inputs(
+        self, limit: int, before_version: int | None
+    ) -> None:
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= 100
+        ):
+            raise ValueError("history limit is outside the configured range")
+        if before_version is not None:
+            self._validate_required_version(before_version)
+
     def _validate_write_inputs(
         self,
         expected_version: int | None,
@@ -913,6 +1281,7 @@ class PostgresMemoryStore:
         object_id: str,
         kind: str,
         logical_bytes: int = 0,
+        created_at: datetime | None = None,
     ) -> None:
         await self._change_quota(
             session,
@@ -921,7 +1290,7 @@ class PostgresMemoryStore:
             documents_delta=0,
             physical_objects_delta=1,
         )
-        now = _now()
+        now = created_at or _now()
         await session.execute(
             insert(self.tables.objects).values(
                 **_scope_values(scope),
@@ -934,6 +1303,7 @@ class PostgresMemoryStore:
                 updated_at=now,
             )
         )
+
     async def _insert_version(
         self,
         session: AsyncSession,
@@ -943,8 +1313,26 @@ class PostgresMemoryStore:
         kind: str,
         version: int,
         raw: bytes,
+        committed_by_principal_id: str | None = None,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
+        created_at: datetime | None = None,
     ) -> None:
         purpose = "memory-document" if kind == "document" else "memory-manifest"
+        if kind == "document":
+            raw = _encode_document_payload(
+                raw,
+                committed_by_principal_id=committed_by_principal_id,
+                co_authored_by=co_authored_by,
+                change_comment=change_comment,
+            )
+        elif (
+            committed_by_principal_id is not None
+            or co_authored_by
+            or change_comment is not None
+        ):
+            raise ValueError("provenance is supported only for documents")
+        version_created_at = created_at or _now()
         payload = await self._encrypt(
             raw,
             scope,
@@ -963,7 +1351,7 @@ class PostgresMemoryStore:
                 provider_id=payload.provider_id,
                 key_id=payload.key_id,
                 format_version=payload.format_version,
-                created_at=_now(),
+                created_at=version_created_at,
             )
         )
         oldest_retained = version - self.config.max_versions_per_object
@@ -986,8 +1374,13 @@ class PostgresMemoryStore:
         if root is not None:
             return root
         object_id = _opaque_uuid()
+        created_at = _now()
         await self._insert_object(
-            session, scope, object_id=object_id, kind="root"
+            session,
+            scope,
+            object_id=object_id,
+            kind="root",
+            created_at=created_at,
         )
         await self._insert_version(
             session,
@@ -996,6 +1389,7 @@ class PostgresMemoryStore:
             kind="root",
             version=1,
             raw=_encode_manifest(()),
+            created_at=created_at,
         )
         root = await self._load_object(session, scope, object_id, for_update=True)
         if root is None:  # defensive; the insert and lookup share one transaction.
@@ -1047,6 +1441,56 @@ class PostgresMemoryStore:
         if row is None:
             raise IntegrityFailure("encrypted object version is unavailable")
         return row
+
+    async def _load_available_history_version(
+        self,
+        session: AsyncSession,
+        scope: Scope,
+        object_row: Mapping[str, Any],
+        version: int,
+    ) -> Mapping[str, Any]:
+        table = self.tables.versions
+        current_version = int(object_row["current_version"])
+        row = (
+            await session.execute(
+                select(table).where(
+                    _object_predicate(table, scope, object_row["object_id"]),
+                    table.c.version == version,
+                    or_(
+                        table.c.version == current_version,
+                        table.c.purge_after > _now(),
+                    ),
+                )
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            raise NotFoundOrDenied("memory version is unavailable")
+        return row
+
+    async def _decode_version_document(
+        self,
+        row: Mapping[str, Any],
+        scope: Scope,
+        *,
+        object_id: str,
+        version: int,
+    ) -> tuple[str, str | None, tuple[str, ...], str | None]:
+        framed = await self._decrypt_row(
+            row,
+            scope,
+            purpose="memory-document",
+            object_id=object_id,
+            object_kind="document",
+            version=version,
+        )
+        raw, committed_by, co_authors, change_comment = _decode_document_payload(
+            framed
+        )
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise IntegrityFailure("encrypted document is malformed") from exc
+        return content, committed_by, co_authors, change_comment
 
     async def _load_current_payload(
         self,
@@ -1136,11 +1580,13 @@ class PostgresMemoryStore:
                 if not create:
                     raise NotFoundOrDenied("memory object is unavailable")
                 directory_id = _opaque_uuid()
+                created_at = _now()
                 await self._insert_object(
                     session,
                     scope,
                     object_id=directory_id,
                     kind="directory",
+                    created_at=created_at,
                 )
                 await self._insert_version(
                     session,
@@ -1149,6 +1595,7 @@ class PostgresMemoryStore:
                     kind="directory",
                     version=1,
                     raw=_encode_manifest(()),
+                    created_at=created_at,
                 )
                 entry = _ManifestEntry(
                     name=segment, object_id=directory_id, kind="directory"
@@ -1179,6 +1626,7 @@ class PostgresMemoryStore:
     ) -> None:
         old_version = int(object_row["current_version"])
         new_version = old_version + 1
+        version_created_at = _now()
         await self._insert_version(
             session,
             scope,
@@ -1186,6 +1634,7 @@ class PostgresMemoryStore:
             kind=object_row["object_kind"],
             version=new_version,
             raw=_encode_manifest(entries),
+            created_at=version_created_at,
         )
         changed = await session.execute(
             update(self.tables.objects)
@@ -1196,7 +1645,7 @@ class PostgresMemoryStore:
                 self.tables.objects.c.current_version == old_version,
                 self.tables.objects.c.lifecycle == "active",
             )
-            .values(current_version=new_version, updated_at=_now())
+            .values(current_version=new_version, updated_at=version_created_at)
         )
         if changed.rowcount != 1:
             raise VersionConflict("directory changed concurrently")
@@ -1214,7 +1663,7 @@ class PostgresMemoryStore:
         # RowMapping is immutable, but callers may keep traversing this object.
         if isinstance(object_row, dict):
             object_row["current_version"] = new_version
-            object_row["updated_at"] = _now()
+            object_row["updated_at"] = version_created_at
 
     async def _write_new_version(
         self,
@@ -1224,6 +1673,9 @@ class PostgresMemoryStore:
         raw: bytes,
         *,
         expected_version: int | None,
+        committed_by_principal_id: str | None,
+        co_authored_by: Sequence[str],
+        change_comment: str | None,
     ) -> tuple[WriteResult, str]:
         parent, manifest, leaf = await self._resolve_parent(
             session, scope, path, create=True
@@ -1239,12 +1691,14 @@ class PostgresMemoryStore:
                 documents_delta=1,
             )
             object_id = _opaque_uuid()
+            version_created_at = _now()
             await self._insert_object(
                 session,
                 scope,
                 object_id=object_id,
                 kind="document",
                 logical_bytes=len(raw),
+                created_at=version_created_at,
             )
             await self._insert_version(
                 session,
@@ -1253,6 +1707,10 @@ class PostgresMemoryStore:
                 kind="document",
                 version=1,
                 raw=raw,
+                committed_by_principal_id=committed_by_principal_id,
+                co_authored_by=co_authored_by,
+                change_comment=change_comment,
+                created_at=version_created_at,
             )
             await self._replace_manifest(
                 session,
@@ -1274,7 +1732,16 @@ class PostgresMemoryStore:
         if expected_version is None or resolved["current_version"] != expected_version:
             raise VersionConflict("document version does not match")
         return (
-            await self._replace_document(session, scope, path, resolved, raw),
+            await self._replace_document(
+                session,
+                scope,
+                path,
+                resolved,
+                raw,
+                committed_by_principal_id=committed_by_principal_id,
+                co_authored_by=co_authored_by,
+                change_comment=change_comment,
+            ),
             resolved["object_id"],
         )
 
@@ -1285,9 +1752,14 @@ class PostgresMemoryStore:
         path: str,
         object_row: Mapping[str, Any],
         raw: bytes,
+        *,
+        committed_by_principal_id: str | None,
+        co_authored_by: Sequence[str],
+        change_comment: str | None,
     ) -> WriteResult:
         old_version = int(object_row["current_version"])
         new_version = old_version + 1
+        version_created_at = _now()
         delta = len(raw) - int(object_row["logical_bytes"])
         await self._change_quota(
             session, scope, bytes_delta=delta, documents_delta=0
@@ -1299,6 +1771,10 @@ class PostgresMemoryStore:
             kind="document",
             version=new_version,
             raw=raw,
+            committed_by_principal_id=committed_by_principal_id,
+            co_authored_by=co_authored_by,
+            change_comment=change_comment,
+            created_at=version_created_at,
         )
         changed = await session.execute(
             update(self.tables.objects)
@@ -1312,7 +1788,7 @@ class PostgresMemoryStore:
             .values(
                 current_version=new_version,
                 logical_bytes=len(raw),
-                updated_at=_now(),
+                updated_at=version_created_at,
             )
         )
         if changed.rowcount != 1:
@@ -1509,6 +1985,9 @@ class PostgresMemoryStore:
             raw, version_created = await self._load_current_payload(
                 session, scope, object_row
             )
+            raw, committed_by, co_authors, change_comment = (
+                _decode_document_payload(raw)
+            )
             try:
                 content = raw.decode("utf-8")
             except UnicodeDecodeError as exc:
@@ -1519,7 +1998,10 @@ class PostgresMemoryStore:
                     content=content,
                     version=object_row["current_version"],
                     created_at=object_row["created_at"],
-                    updated_at=version_created,
+                    version_created_at=version_created,
+                    committed_by_principal_id=committed_by,
+                    co_authored_by=co_authors,
+                    change_comment=change_comment,
                 )
             )
             return

@@ -215,6 +215,8 @@ async def test_runtime_composes_headless_server_without_database_connection(
         assert tool_names == {
             "memory_list",
             "memory_read",
+            "memory_history_list",
+            "memory_history_read",
             "memory_write",
             "memory_append",
             "memory_delete",

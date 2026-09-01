@@ -5,8 +5,11 @@ from importlib.metadata import PackageNotFoundError, version as _distribution_ve
 from .domain.models import (
     DeleteResult,
     DocumentSnapshot,
+    HistoricalDocument,
     MemoryAction,
     MemoryEntry,
+    MemoryHistoryPage,
+    MemoryVersion,
     Scope,
     VerifiedInvocation,
     WriteResult,
@@ -15,8 +18,11 @@ from .domain.models import (
 __all__ = [
     "DeleteResult",
     "DocumentSnapshot",
+    "HistoricalDocument",
     "MemoryAction",
     "MemoryEntry",
+    "MemoryHistoryPage",
+    "MemoryVersion",
     "Scope",
     "VerifiedInvocation",
     "WriteResult",

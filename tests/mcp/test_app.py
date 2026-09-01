@@ -66,6 +66,8 @@ async def test_app_exposes_one_model_entry_and_marks_helpers_app_only(
     assert set(tools) == {
         "memory_list",
         "memory_read",
+        "memory_history_list",
+        "memory_history_read",
         "memory_write",
         "memory_append",
         "memory_delete",
