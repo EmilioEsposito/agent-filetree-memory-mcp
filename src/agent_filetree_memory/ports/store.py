@@ -8,7 +8,9 @@ from typing import Protocol, Sequence
 from ..domain.models import (
     DeleteResult,
     DocumentSnapshot,
+    HistoricalDocument,
     MemoryEntry,
+    MemoryHistoryPage,
     Scope,
     WriteResult,
 )
@@ -33,6 +35,28 @@ class MemoryStore(Protocol):
         principal_id: str | None = None,
     ) -> DocumentSnapshot: ...
 
+    async def list_history(
+        self,
+        scope: Scope,
+        path: str,
+        *,
+        limit: int,
+        before_version: int | None = None,
+        invocation_id: str | None = None,
+        principal_id: str | None = None,
+    ) -> MemoryHistoryPage: ...
+
+    async def read_history(
+        self,
+        scope: Scope,
+        path: str,
+        version: int,
+        *,
+        compare_to_version: int | None = None,
+        invocation_id: str | None = None,
+        principal_id: str | None = None,
+    ) -> HistoricalDocument: ...
+
     async def write(
         self,
         scope: Scope,
@@ -43,6 +67,8 @@ class MemoryStore(Protocol):
         idempotency_key: str,
         invocation_id: str,
         principal_id: str | None = None,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
     ) -> WriteResult: ...
 
     async def append(
@@ -55,6 +81,8 @@ class MemoryStore(Protocol):
         idempotency_key: str,
         invocation_id: str,
         principal_id: str | None = None,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
     ) -> WriteResult: ...
 
     async def delete(

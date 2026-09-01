@@ -22,6 +22,8 @@ def validate_opaque_id(value: str, *, field: str) -> str:
 class MemoryAction(StrEnum):
     LIST = "memory:list"
     READ = "memory:read"
+    HISTORY_LIST = "memory:history:list"
+    HISTORY_READ = "memory:history:read"
     WRITE = "memory:write"
     APPEND = "memory:append"
     DELETE = "memory:delete"
@@ -87,7 +89,12 @@ class MemoryEntry:
     path: str
     kind: str
     version: int
-    updated_at: datetime
+    version_created_at: datetime
+
+    @property
+    def updated_at(self) -> datetime:
+        """Compatibility alias for the immutable head-version timestamp."""
+        return self.version_created_at
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +103,45 @@ class DocumentSnapshot:
     content: str
     version: int
     created_at: datetime
-    updated_at: datetime
+    version_created_at: datetime
+    committed_by_principal_id: str | None = None
+    co_authored_by: tuple[str, ...] = ()
+    change_comment: str | None = None
+
+    @property
+    def updated_at(self) -> datetime:
+        """Compatibility alias for the immutable version timestamp."""
+        return self.version_created_at
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryVersion:
+    version: int
+    version_created_at: datetime
+    committed_by_principal_id: str | None = None
+    co_authored_by: tuple[str, ...] = ()
+    change_comment: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryHistoryPage:
+    path: str
+    current_version: int
+    versions: tuple[MemoryVersion, ...]
+    next_before_version: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalDocument:
+    path: str
+    content: str
+    version: int
+    version_created_at: datetime
+    committed_by_principal_id: str | None = None
+    co_authored_by: tuple[str, ...] = ()
+    change_comment: str | None = None
+    compared_to_version: int | None = None
+    diff: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

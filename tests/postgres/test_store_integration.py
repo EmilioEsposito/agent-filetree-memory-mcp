@@ -47,6 +47,8 @@ async def test_tree_lifecycle_and_encrypted_raw_storage(
     postgres_store, postgres_runtime
 ):
     marker = "synthetic-canary-31df7"
+    co_author_marker = "agent:private-coauthor-31df7"
+    comment_marker = "private-change-comment-31df7"
     path = "/private-notes/launch-plan.md"
     created = await postgres_store.write(
         scope(),
@@ -55,6 +57,9 @@ async def test_tree_lifecycle_and_encrypted_raw_storage(
         expected_version=None,
         idempotency_key="create-1",
         invocation_id="run-1",
+        principal_id="principal-writer",
+        co_authored_by=(co_author_marker,),
+        change_comment=comment_marker,
     )
     assert created.version == 1
     assert created.created
@@ -109,6 +114,8 @@ async def test_tree_lifecycle_and_encrypted_raw_storage(
     assert marker not in raw_rows
     assert "launch-plan.md" not in raw_rows
     assert "/private-notes" not in raw_rows
+    assert co_author_marker not in raw_rows
+    assert comment_marker not in raw_rows
     async with postgres_runtime.session() as session:
         invocation_ids = set(
             (
@@ -191,6 +198,133 @@ async def test_same_agent_memory_persists_across_invocations_and_audits_actors(
             )
         ).scalars().all()
     assert actors == ["principal-a", "principal-b"]
+
+
+async def test_history_exposes_canonical_time_provenance_comment_and_diff(
+    postgres_store, postgres_runtime
+):
+    history_scope = scope(workspace="history-provenance-workspace")
+    path = "/decisions.md"
+    await postgres_store.write(
+        history_scope,
+        path,
+        "# Decision\n\nFirst choice\n",
+        expected_version=None,
+        idempotency_key="history-provenance-create",
+        invocation_id="history-provenance-run-1",
+        principal_id="principal-a",
+        co_authored_by=("agent:claude",),
+        change_comment="Record the initial choice",
+    )
+    replay = await postgres_store.write(
+        history_scope,
+        path,
+        "# Decision\n\nFirst choice\n",
+        expected_version=None,
+        idempotency_key="history-provenance-create",
+        invocation_id="history-provenance-run-1-retry",
+        principal_id="principal-a",
+        co_authored_by=("agent:claude",),
+        change_comment="Record the initial choice",
+    )
+    assert replay.idempotent_replay is True
+    with pytest.raises(IdempotencyConflict):
+        await postgres_store.write(
+            history_scope,
+            path,
+            "# Decision\n\nFirst choice\n",
+            expected_version=None,
+            idempotency_key="history-provenance-create",
+            invocation_id="history-provenance-run-1-conflict",
+            principal_id="principal-a",
+            co_authored_by=("agent:claude",),
+            change_comment="A different comment",
+        )
+    first = await postgres_store.read(history_scope, path)
+    assert first.created_at == first.version_created_at
+    await postgres_store.write(
+        history_scope,
+        path,
+        "# Decision\n\nSecond choice\n",
+        expected_version=1,
+        idempotency_key="history-provenance-update",
+        invocation_id="history-provenance-run-2",
+        principal_id="principal-b",
+        co_authored_by=("agent:codex",),
+        change_comment="Revise after review",
+    )
+
+    current = await postgres_store.read(history_scope, path)
+    assert current.version == 2
+    assert current.version_created_at == current.updated_at
+    assert current.committed_by_principal_id == "principal-b"
+    assert current.co_authored_by == ("agent:codex",)
+    assert current.change_comment == "Revise after review"
+
+    newest_page = await postgres_store.list_history(
+        history_scope,
+        path,
+        limit=1,
+        invocation_id="history-list-run-1",
+        principal_id="principal-reader",
+    )
+    assert newest_page.current_version == 2
+    assert [item.version for item in newest_page.versions] == [2]
+    assert newest_page.versions[0].version_created_at == current.version_created_at
+    assert newest_page.versions[0].committed_by_principal_id == "principal-b"
+    assert newest_page.versions[0].co_authored_by == ("agent:codex",)
+    assert newest_page.versions[0].change_comment == "Revise after review"
+    assert newest_page.next_before_version == 2
+
+    older_page = await postgres_store.list_history(
+        history_scope,
+        path,
+        limit=1,
+        before_version=newest_page.next_before_version,
+    )
+    assert [item.version for item in older_page.versions] == [1]
+    assert older_page.versions[0].version_created_at == first.version_created_at
+    assert older_page.versions[0].committed_by_principal_id == "principal-a"
+    assert older_page.versions[0].co_authored_by == ("agent:claude",)
+    assert older_page.versions[0].change_comment == "Record the initial choice"
+    assert older_page.next_before_version is None
+
+    historical = await postgres_store.read_history(
+        history_scope,
+        path,
+        2,
+        compare_to_version=1,
+        invocation_id="history-read-run",
+        principal_id="principal-reader",
+    )
+    assert historical.content == "# Decision\n\nSecond choice\n"
+    assert historical.version_created_at == current.version_created_at
+    assert historical.committed_by_principal_id == "principal-b"
+    assert historical.co_authored_by == ("agent:codex",)
+    assert historical.change_comment == "Revise after review"
+    assert historical.compared_to_version == 1
+    assert historical.diff is not None
+    assert f"--- {path}@v1" in historical.diff
+    assert f"+++ {path}@v2" in historical.diff
+    assert "-First choice" in historical.diff
+    assert "+Second choice" in historical.diff
+
+    audit = postgres_runtime.tables.audit_events
+    async with postgres_runtime.session() as session:
+        history_actions = set(
+            (
+                await session.execute(
+                    select(audit.c.action).where(
+                        audit.c.workspace_id == history_scope.workspace_id,
+                        audit.c.agent_profile_id == history_scope.agent_profile_id,
+                        audit.c.action.in_(
+                            ["memory:history:list", "memory:history:read"]
+                        ),
+                    )
+                )
+            ).scalars()
+        )
+    assert history_actions == {"memory:history:list", "memory:history:read"}
 
 
 async def test_compare_and_swap_and_idempotency(postgres_store):
@@ -459,6 +593,20 @@ async def test_superseded_document_versions_expire_but_current_survives(
     assert rows[0].purge_after is not None
     assert rows[1].purge_after is None
 
+    async with postgres_runtime.session() as session, session.begin():
+        await session.execute(
+            update(tables.versions)
+            .where(
+                tables.versions.c.object_id == object_id,
+                tables.versions.c.version == 1,
+            )
+            .values(purge_after=datetime.now(timezone.utc) - timedelta(seconds=1))
+        )
+    history = await store.list_history(scope(), "/history.md", limit=20)
+    assert [item.version for item in history.versions] == [2]
+    with pytest.raises(NotFoundOrDenied):
+        await store.read_history(scope(), "/history.md", 1)
+
     assert await store.purge_due(
         now=datetime.now(timezone.utc) + timedelta(seconds=1)
     ) == 0
@@ -533,6 +681,10 @@ async def test_each_object_retains_only_the_configured_version_ceiling(
 
     assert retained == [4, 5, 6]
     assert (await store.read(versioned_scope, "/bounded.md")).content == "version-6"
+    history = await store.list_history(versioned_scope, "/bounded.md", limit=20)
+    assert [item.version for item in history.versions] == [6, 5, 4]
+    with pytest.raises(NotFoundOrDenied):
+        await store.read_history(versioned_scope, "/bounded.md", 3)
 
 
 async def test_janitor_entry_point_bounds_each_table_and_repeated_runs_drain(

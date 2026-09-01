@@ -149,6 +149,8 @@ class WriteDocumentRequest(BaseModel):
     content: str = Field(max_length=1_048_576)
     expected_version: int | None = Field(default=None, ge=1)
     idempotency_key: str = Field(min_length=1, max_length=255)
+    co_authored_by: list[str] = Field(default_factory=list, max_length=8)
+    change_comment: str | None = Field(default=None, max_length=2048)
 
 
 class AppendDocumentRequest(BaseModel):
@@ -157,6 +159,8 @@ class AppendDocumentRequest(BaseModel):
     content: str = Field(min_length=1, max_length=262_144)
     expected_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=255)
+    co_authored_by: list[str] = Field(default_factory=list, max_length=8)
+    change_comment: str | None = Field(default=None, max_length=2048)
 
 
 class DeleteDocumentRequest(BaseModel):
@@ -188,6 +192,23 @@ def _agent_payload(item) -> dict[str, object]:
         "content_role": content_role_name(item.content_role),
         "can_manage": item.can_manage,
         "created_at": item.created_at.isoformat(),
+    }
+
+
+def _version_attribution_payload(item) -> dict[str, object]:
+    return {
+        "committed_by": (
+            {
+                "principal_id": item.committed_by_principal_id,
+                "verification": "authenticated",
+            }
+            if item.committed_by_principal_id is not None
+            else None
+        ),
+        "co_authored_by": [
+            {"identifier": value, "verification": "self_asserted"}
+            for value in item.co_authored_by
+        ],
     }
 
 
@@ -720,6 +741,7 @@ def create_management_api(
                     "path": item.path,
                     "kind": item.kind,
                     "version": item.version,
+                    "version_created_at": item.version_created_at.isoformat(),
                     "updated_at": item.updated_at.isoformat(),
                 }
                 for item in entries
@@ -747,7 +769,82 @@ def create_management_api(
             "content": item.content,
             "version": item.version,
             "created_at": item.created_at.isoformat(),
+            "version_created_at": item.version_created_at.isoformat(),
             "updated_at": item.updated_at.isoformat(),
+            **_version_attribution_payload(item),
+            "change_comment": item.change_comment,
+        }
+
+    @app.get(
+        "/workspaces/{workspace_slug}/agents/{agent_slug}/memory/history"
+    )
+    async def list_document_history(
+        workspace_slug: str,
+        agent_slug: str,
+        path: str = Query(min_length=1, max_length=4096),
+        limit: int = Query(default=20, ge=1, le=100),
+        before_version: int | None = Query(default=None, ge=1),
+        principal: ManagementPrincipal = Depends(current_principal),
+    ):
+        invocation = await invocation_for(
+            principal=principal,
+            workspace_slug=workspace_slug,
+            agent_slug=agent_slug,
+            action=MemoryAction.HISTORY_LIST,
+        )
+        page = await memory_service.list_history(
+            invocation,
+            path,
+            limit=limit,
+            before_version=before_version,
+        )
+        return {
+            "path": page.path,
+            "current_version": page.current_version,
+            "versions": [
+                {
+                    "version": item.version,
+                    "version_created_at": item.version_created_at.isoformat(),
+                    **_version_attribution_payload(item),
+                    "change_comment": item.change_comment,
+                }
+                for item in page.versions
+            ],
+            "next_before_version": page.next_before_version,
+        }
+
+    @app.get(
+        "/workspaces/{workspace_slug}/agents/{agent_slug}/memory/history/document"
+    )
+    async def read_document_history(
+        workspace_slug: str,
+        agent_slug: str,
+        path: str = Query(min_length=1, max_length=4096),
+        version: int = Query(ge=1),
+        compare_to_version: int | None = Query(default=None, ge=1),
+        principal: ManagementPrincipal = Depends(current_principal),
+    ):
+        invocation = await invocation_for(
+            principal=principal,
+            workspace_slug=workspace_slug,
+            agent_slug=agent_slug,
+            action=MemoryAction.HISTORY_READ,
+        )
+        item = await memory_service.read_history(
+            invocation,
+            path,
+            version,
+            compare_to_version=compare_to_version,
+        )
+        return {
+            "path": item.path,
+            "content": item.content,
+            "version": item.version,
+            "version_created_at": item.version_created_at.isoformat(),
+            **_version_attribution_payload(item),
+            "change_comment": item.change_comment,
+            "compared_to_version": item.compared_to_version,
+            "diff": item.diff,
         }
 
     @app.put(
@@ -771,6 +868,8 @@ def create_management_api(
             body.content,
             expected_version=body.expected_version,
             idempotency_key=body.idempotency_key,
+            co_authored_by=body.co_authored_by,
+            change_comment=body.change_comment,
         )
         return {
             "path": item.path,
@@ -800,6 +899,8 @@ def create_management_api(
             body.content,
             expected_version=body.expected_version,
             idempotency_key=body.idempotency_key,
+            co_authored_by=body.co_authored_by,
+            change_comment=body.change_comment,
         )
         return {
             "path": item.path,

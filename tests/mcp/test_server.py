@@ -27,7 +27,7 @@ SCOPE_ARGUMENTS = {
 }
 
 
-async def test_headless_protocol_exposes_exactly_five_bounded_tools(
+async def test_headless_protocol_exposes_exactly_seven_bounded_tools(
     service, resolver
 ):
     server = create_mcp_server(service, resolver, include_app=False)
@@ -38,6 +38,8 @@ async def test_headless_protocol_exposes_exactly_five_bounded_tools(
     assert set(tools) == {
         "memory_list",
         "memory_read",
+        "memory_history_list",
+        "memory_history_read",
         "memory_write",
         "memory_append",
         "memory_delete",
@@ -49,6 +51,8 @@ async def test_headless_protocol_exposes_exactly_five_bounded_tools(
 
     assert tools["memory_list"].annotations.readOnlyHint is True
     assert tools["memory_read"].annotations.readOnlyHint is True
+    assert tools["memory_history_list"].annotations.readOnlyHint is True
+    assert tools["memory_history_read"].annotations.readOnlyHint is True
     assert tools["memory_write"].annotations.destructiveHint is True
     assert tools["memory_append"].annotations.destructiveHint is False
     assert tools["memory_delete"].annotations.destructiveHint is True
@@ -66,6 +70,8 @@ async def test_mutation_schemas_encode_create_only_cas_and_safe_retries(
     assert "expected_version" not in write["required"]
     assert write["properties"]["expected_version"]["default"] is None
     assert write["properties"]["idempotency_key"]["minLength"] == 1
+    assert write["properties"]["co_authored_by"]["maxItems"] == 8
+    assert "change_comment" not in write["required"]
 
     for name in ("memory_append", "memory_delete"):
         schema = tools[name].inputSchema
@@ -82,6 +88,18 @@ async def test_protocol_calls_resolve_action_and_serialize_domain_results(
     async with Client(server) as client:
         listed = await client.call_tool("memory_list", {"path": "/private"})
         read = await client.call_tool("memory_read", {"path": PRIVATE_PATH})
+        history = await client.call_tool(
+            "memory_history_list",
+            {"path": PRIVATE_PATH, "limit": 10},
+        )
+        historical = await client.call_tool(
+            "memory_history_read",
+            {
+                "path": PRIVATE_PATH,
+                "version": 6,
+                "compare_to_version": 7,
+            },
+        )
         written = await client.call_tool(
             "memory_write",
             {
@@ -89,6 +107,8 @@ async def test_protocol_calls_resolve_action_and_serialize_domain_results(
                 "content": "# replaced",
                 "expected_version": 7,
                 "idempotency_key": "write-1",
+                "co_authored_by": ["agent:claude"],
+                "change_comment": "Replace heading",
             },
         )
         appended = await client.call_tool(
@@ -98,6 +118,7 @@ async def test_protocol_calls_resolve_action_and_serialize_domain_results(
                 "content": "\nnext",
                 "expected_version": 8,
                 "idempotency_key": "append-1",
+                "change_comment": "Add next item",
             },
         )
         deleted = await client.call_tool(
@@ -110,7 +131,36 @@ async def test_protocol_calls_resolve_action_and_serialize_domain_results(
         )
 
     assert listed.structured_content["entries"][0]["path"] == PRIVATE_PATH
+    assert listed.structured_content["entries"][0]["version_created_at"].startswith(
+        "2026-08-28T16:00:00"
+    )
     assert read.structured_content["content"] == PRIVATE_CONTENT
+    assert read.structured_content["version_created_at"] == read.structured_content[
+        "updated_at"
+    ]
+    assert read.structured_content["committed_by"] == {
+        "principal_id": "principal-secret",
+        "verification": "authenticated",
+    }
+    assert read.structured_content["co_authored_by"] == [
+        {"identifier": "agent:claude", "verification": "self_asserted"}
+    ]
+    assert read.structured_content["change_comment"] == "Seed current version"
+    assert [item["version"] for item in history.structured_content["versions"]] == [
+        7,
+        6,
+    ]
+    assert history.structured_content["versions"][0]["change_comment"] == (
+        "Seed current version"
+    )
+    assert history.structured_content["versions"][1]["committed_by"] == {
+        "principal_id": "principal-previous",
+        "verification": "authenticated",
+    }
+    assert historical.structured_content["content"] == "# previous"
+    assert historical.structured_content["change_comment"] == "Previous version"
+    assert historical.structured_content["compared_to_version"] == 7
+    assert historical.structured_content["diff"].startswith("--- old")
     assert written.structured_content == {
         "path": PRIVATE_PATH,
         "version": 8,
@@ -125,11 +175,42 @@ async def test_protocol_calls_resolve_action_and_serialize_domain_results(
     assert [action for _, action in resolver.calls] == [
         MemoryAction.LIST,
         MemoryAction.READ,
+        MemoryAction.HISTORY_LIST,
+        MemoryAction.HISTORY_READ,
         MemoryAction.WRITE,
         MemoryAction.APPEND,
         MemoryAction.DELETE,
     ]
     assert all(call[1] is resolver.invocation for call in service.calls)
+    assert service.calls[4][2]["co_authored_by"] == ["agent:claude"]
+    assert service.calls[4][2]["change_comment"] == "Replace heading"
+    assert service.calls[5][2]["change_comment"] == "Add next item"
+
+
+async def test_history_capabilities_are_independent(service, resolver):
+    resolver.action_scoped = True
+    server = create_mcp_server(service, resolver, include_app=False)
+
+    async with Client(server) as client:
+        await client.call_tool(
+            "memory_history_list",
+            {"path": PRIVATE_PATH},
+        )
+        await client.call_tool(
+            "memory_history_read",
+            {"path": PRIVATE_PATH, "version": 6},
+        )
+
+    assert [action for _, action in resolver.calls] == [
+        MemoryAction.HISTORY_LIST,
+        MemoryAction.HISTORY_READ,
+    ]
+    assert service.calls[0][1].allowed_actions == frozenset(
+        {MemoryAction.HISTORY_LIST}
+    )
+    assert service.calls[1][1].allowed_actions == frozenset(
+        {MemoryAction.HISTORY_READ}
+    )
 
 
 async def test_create_without_expected_version_reaches_service_unchanged(

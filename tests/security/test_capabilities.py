@@ -105,6 +105,32 @@ def test_distinct_authenticated_principals_can_receive_the_same_durable_scope() 
         assert verified.principal_id == principal_id
 
 
+def test_history_metadata_and_content_are_independent_capabilities() -> None:
+    issuer, _ = issuer_and_key()
+    token = issuer.issue(
+        SCOPE,
+        {MemoryAction.HISTORY_LIST},
+        principal_id=PRINCIPAL_ID,
+        now=NOW,
+    )
+    verifier = issuer.verifier()
+
+    verified = verifier.verify(
+        token,
+        required_action=MemoryAction.HISTORY_LIST,
+        expected_principal_id=PRINCIPAL_ID,
+        now=NOW,
+    )
+    assert verified.allowed_actions == {MemoryAction.HISTORY_LIST}
+    with pytest.raises(AuthorizationDenied, match="not authorized"):
+        verifier.verify(
+            token,
+            required_action=MemoryAction.HISTORY_READ,
+            expected_principal_id=PRINCIPAL_ID,
+            now=NOW,
+        )
+
+
 def test_verifier_supports_explicit_signing_key_rotation() -> None:
     old, _ = issuer_and_key()
     new_private = Ed25519PrivateKey.generate()
@@ -140,7 +166,14 @@ def test_verifier_supports_explicit_signing_key_rotation() -> None:
 
 @pytest.mark.parametrize(
     "required_action",
-    [MemoryAction.WRITE, MemoryAction.APPEND, MemoryAction.DELETE, MemoryAction.EXPORT],
+    [
+        MemoryAction.HISTORY_LIST,
+        MemoryAction.HISTORY_READ,
+        MemoryAction.WRITE,
+        MemoryAction.APPEND,
+        MemoryAction.DELETE,
+        MemoryAction.EXPORT,
+    ],
 )
 def test_action_set_cannot_be_widened(required_action: MemoryAction) -> None:
     issuer, _ = issuer_and_key()

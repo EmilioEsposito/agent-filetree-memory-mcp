@@ -54,6 +54,21 @@ management grants, content grants, and content-free audit events. The host
 still owns identity verification and supplies the stable principal; it may use
 the package control plane or enforce an equivalent external policy.
 
+When a write or append creates an immutable document version, that verified
+`principal_id` is stored with the encrypted version and returned as
+`committed_by` with `verification: "authenticated"`. This is intentionally a
+narrow statement: the principal's authenticated authorization committed the
+version. It is not proof that a particular human drafted the text, that an
+agent acted autonomously, or that the principal approved every line.
+
+A caller may additionally declare opaque `co_authored_by` identifiers, similar
+in spirit to commit co-author trailers. Those identifiers are not resolved
+through transport authentication and are always returned with
+`verification: "self_asserted"`. The optional `change_comment` is likewise
+caller-supplied descriptive text rather than verified authorship. Older
+versions that predate the metadata framing return no committer or co-author
+claim rather than guessing from later audit records.
+
 ## Provisioning a connection for a generic MCP client
 
 A generic MCP client may be unable to mint signed per-run agent context. The

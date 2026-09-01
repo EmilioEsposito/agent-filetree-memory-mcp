@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
@@ -9,8 +10,11 @@ import pytest
 from agent_filetree_memory.domain.models import (
     DeleteResult,
     DocumentSnapshot,
+    HistoricalDocument,
     MemoryAction,
     MemoryEntry,
+    MemoryHistoryPage,
+    MemoryVersion,
     Scope,
     VerifiedInvocation,
     WriteResult,
@@ -29,7 +33,10 @@ class StubMemoryService:
             content=PRIVATE_CONTENT,
             version=7,
             created_at=NOW - timedelta(days=1),
-            updated_at=NOW,
+            version_created_at=NOW,
+            committed_by_principal_id="principal-secret",
+            co_authored_by=("agent:claude",),
+            change_comment="Seed current version",
         )
         self.calls: list[tuple[str, VerifiedInvocation, dict[str, object]]] = []
         self.write_error: Exception | None = None
@@ -48,7 +55,7 @@ class StubMemoryService:
                     path="/private",
                     kind="directory",
                     version=2,
-                    updated_at=NOW,
+                    version_created_at=NOW,
                 )
             ]
         if path == "/private" and self.snapshot is not None:
@@ -58,7 +65,7 @@ class StubMemoryService:
                     path=self.snapshot.path,
                     kind="document",
                     version=self.snapshot.version,
-                    updated_at=self.snapshot.updated_at,
+                    version_created_at=self.snapshot.version_created_at,
                 )
             ]
         return []
@@ -71,6 +78,77 @@ class StubMemoryService:
         assert self.snapshot is not None
         return self.snapshot
 
+    async def list_history(
+        self,
+        invocation: VerifiedInvocation,
+        path: str,
+        *,
+        limit: int = 20,
+        before_version: int | None = None,
+    ) -> MemoryHistoryPage:
+        invocation.require(MemoryAction.HISTORY_LIST)
+        self.calls.append(
+            (
+                "list_history",
+                invocation,
+                {
+                    "path": path,
+                    "limit": limit,
+                    "before_version": before_version,
+                },
+            )
+        )
+        return MemoryHistoryPage(
+            path=path,
+            current_version=7,
+            versions=(
+                MemoryVersion(
+                    version=7,
+                    version_created_at=NOW,
+                    committed_by_principal_id="principal-secret",
+                    co_authored_by=("agent:claude",),
+                    change_comment="Seed current version",
+                ),
+                MemoryVersion(
+                    version=6,
+                    version_created_at=NOW - timedelta(hours=1),
+                    committed_by_principal_id="principal-previous",
+                    change_comment="Previous version",
+                ),
+            ),
+        )
+
+    async def read_history(
+        self,
+        invocation: VerifiedInvocation,
+        path: str,
+        version: int,
+        *,
+        compare_to_version: int | None = None,
+    ) -> HistoricalDocument:
+        invocation.require(MemoryAction.HISTORY_READ)
+        self.calls.append(
+            (
+                "read_history",
+                invocation,
+                {
+                    "path": path,
+                    "version": version,
+                    "compare_to_version": compare_to_version,
+                },
+            )
+        )
+        return HistoricalDocument(
+            path=path,
+            content="# previous",
+            version=version,
+            version_created_at=NOW - timedelta(hours=1),
+            committed_by_principal_id="principal-previous",
+            change_comment="Previous version",
+            compared_to_version=compare_to_version,
+            diff="--- old\n+++ new\n" if compare_to_version is not None else None,
+        )
+
     async def write(
         self,
         invocation: VerifiedInvocation,
@@ -79,6 +157,8 @@ class StubMemoryService:
         *,
         expected_version: int | None,
         idempotency_key: str,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
     ) -> WriteResult:
         invocation.require(MemoryAction.WRITE)
         self.calls.append(
@@ -90,6 +170,8 @@ class StubMemoryService:
                     "content": content,
                     "expected_version": expected_version,
                     "idempotency_key": idempotency_key,
+                    "co_authored_by": co_authored_by,
+                    "change_comment": change_comment,
                 },
             )
         )
@@ -97,7 +179,16 @@ class StubMemoryService:
             raise self.write_error
         created = expected_version is None
         version = 1 if created else expected_version + 1
-        self.snapshot = DocumentSnapshot(path, content, version, NOW, NOW)
+        self.snapshot = DocumentSnapshot(
+            path,
+            content,
+            version,
+            NOW,
+            NOW,
+            committed_by_principal_id=invocation.principal_id,
+            co_authored_by=tuple(co_authored_by),
+            change_comment=change_comment,
+        )
         return WriteResult(path, version, created)
 
     async def append(
@@ -108,6 +199,8 @@ class StubMemoryService:
         *,
         expected_version: int,
         idempotency_key: str,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
     ) -> WriteResult:
         invocation.require(MemoryAction.APPEND)
         self.calls.append(
@@ -119,6 +212,8 @@ class StubMemoryService:
                     "content": content,
                     "expected_version": expected_version,
                     "idempotency_key": idempotency_key,
+                    "co_authored_by": co_authored_by,
+                    "change_comment": change_comment,
                 },
             )
         )
@@ -131,6 +226,9 @@ class StubMemoryService:
             expected_version + 1,
             self.snapshot.created_at,
             NOW,
+            committed_by_principal_id=invocation.principal_id,
+            co_authored_by=tuple(co_authored_by),
+            change_comment=change_comment,
         )
         return WriteResult(path, expected_version + 1, False)
 
@@ -198,6 +296,8 @@ def verified_invocation() -> VerifiedInvocation:
             {
                 MemoryAction.LIST,
                 MemoryAction.READ,
+                MemoryAction.HISTORY_LIST,
+                MemoryAction.HISTORY_READ,
                 MemoryAction.WRITE,
                 MemoryAction.APPEND,
                 MemoryAction.DELETE,
