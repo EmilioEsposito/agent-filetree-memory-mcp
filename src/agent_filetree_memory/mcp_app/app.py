@@ -863,7 +863,7 @@ def create_memory_browser_app(
                                         Input(
                                             name="new_folder",
                                             value=STATE.new_folder,
-                                            placeholder="Folder (optional)",
+                                            placeholder="Folder (opt.)",
                                             on_change=SetState(
                                                 "new_folder", Rx("$event")
                                             ),

@@ -142,7 +142,7 @@ async def test_open_payload_bootstraps_without_plaintext_memory_or_scope(
     assert "Text" in component_types
     encoded_view = json.dumps(payload["view"])
     assert "Add file" in encoded_view
-    assert "Folder (optional)" in encoded_view
+    assert "Folder (opt.)" in encoded_view
     assert "filename.md" in encoded_view
     for local_name in (
         "ui_memory_list",
