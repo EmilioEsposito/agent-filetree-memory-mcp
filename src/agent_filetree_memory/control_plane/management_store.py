@@ -24,6 +24,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .namespace_store import (
+    AgentAccessPolicy,
     AgentGrantRole,
     NamespaceTables,
     WorkspaceAdmissionPolicy,
@@ -105,6 +106,8 @@ class AgentSummary:
     slug: str
     display_alias: str
     content_role: AgentGrantRole | None
+    explicit_content_role: AgentGrantRole | None
+    access_policy: AgentAccessPolicy
     can_manage: bool
     created_at: datetime
 
@@ -116,6 +119,7 @@ class MemberAccess:
     display_name: str | None
     workspace_role: WorkspaceRole
     content_role: AgentGrantRole | None = None
+    effective_content_role: AgentGrantRole | None = None
     explicit_manager: bool = False
 
 
@@ -549,6 +553,36 @@ class ManagementStore:
         )
         try:
             return AgentGrantRole(row.role)
+        except (TypeError, ValueError):
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
+
+    async def _agent_access_policy(
+        self,
+        session: Any,
+        *,
+        workspace_id: str,
+        agent_profile_id: str,
+        for_update: bool = False,
+    ) -> AgentAccessPolicy:
+        statement = select(self._tables.agent_access_policies).where(
+            self._tables.agent_access_policies.c.workspace_id == workspace_id,
+            self._tables.agent_access_policies.c.agent_profile_id
+            == agent_profile_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        row = (await session.execute(statement)).one_or_none()
+        if row is None:
+            return AgentAccessPolicy.PRIVATE
+        self._verify(
+            row,
+            "agent_access_policy",
+            workspace_id=row.workspace_id,
+            agent_profile_id=row.agent_profile_id,
+            access_policy=row.access_policy,
+        )
+        try:
+            return AgentAccessPolicy(row.access_policy)
         except (TypeError, ValueError):
             raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
 
@@ -1042,6 +1076,18 @@ class ManagementStore:
                 .on_conflict_do_nothing()
             )
             await session.execute(
+                pg_insert(self._tables.agent_access_policies)
+                .values(
+                    **self._signed(
+                        "agent_access_policy",
+                        workspace_id=workspace_id,
+                        agent_profile_id=agent_profile_id,
+                        access_policy=AgentAccessPolicy.PRIVATE.value,
+                    )
+                )
+                .on_conflict_do_nothing()
+            )
+            await session.execute(
                 pg_insert(self._tables.agent_grants)
                 .values(
                     **self._signed(
@@ -1365,6 +1411,16 @@ class ManagementStore:
                     )
                 )
             )
+            await session.execute(
+                self._tables.agent_access_policies.insert().values(
+                    **self._signed(
+                        "agent_access_policy",
+                        workspace_id=access.workspace_id,
+                        agent_profile_id=agent_profile_id,
+                        access_policy=AgentAccessPolicy.PRIVATE.value,
+                    )
+                )
+            )
             creator_role = AgentGrantRole.ADMIN
             await session.execute(
                 self._tables.agent_grants.insert().values(
@@ -1447,12 +1503,23 @@ class ManagementStore:
                     display_alias=row.display_alias,
                     created_by_principal_id=row.created_by_principal_id,
                 )
-                content_role = await self._content_grant(
+                explicit_content_role = await self._content_grant(
                     session,
                     workspace_id=access.workspace_id,
                     agent_profile_id=row.agent_profile_id,
                     principal_id=principal_id,
                 )
+                access_policy = await self._agent_access_policy(
+                    session,
+                    workspace_id=access.workspace_id,
+                    agent_profile_id=row.agent_profile_id,
+                )
+                content_role = explicit_content_role
+                if (
+                    content_role is None
+                    and access_policy is AgentAccessPolicy.WORKSPACE_READ
+                ):
+                    content_role = AgentGrantRole.READER
                 explicit_manager = await self._is_explicit_manager(
                     session,
                     workspace_id=access.workspace_id,
@@ -1473,6 +1540,8 @@ class ManagementStore:
                         slug=row.slug,
                         display_alias=row.display_alias,
                         content_role=content_role,
+                        explicit_content_role=explicit_content_role,
+                        access_policy=access_policy,
                         can_manage=can_manage,
                         created_at=row.created_at,
                     )
@@ -1530,6 +1599,134 @@ class ManagementStore:
                 workspace_id=access.workspace_id,
                 actor_principal_id=principal_id,
                 action="agent.alias.update",
+                target_kind="agent",
+                target_id=agent.agent_profile_id,
+            )
+        summaries = await self.list_agents(
+            principal_id=principal_id,
+            workspace_slug=workspace_slug,
+        )
+        return next(item for item in summaries if item.slug == agent_slug)
+
+    async def set_agent_access_policy(
+        self,
+        *,
+        principal_id: str,
+        workspace_slug: str,
+        agent_slug: str,
+        access_policy: AgentAccessPolicy,
+        allow_admin_self_grant: bool,
+        self_grant_confirmed: bool = False,
+    ) -> AgentSummary:
+        try:
+            access_policy = AgentAccessPolicy(access_policy)
+        except (TypeError, ValueError):
+            raise ValueError("agent access policy is invalid") from None
+        async with self._session_factory() as session, session.begin():
+            access = await self._workspace_access(
+                session,
+                workspace_slug=workspace_slug,
+                principal_id=principal_id,
+            )
+            agent = await self._agent_row(
+                session,
+                workspace_id=access.workspace_id,
+                agent_slug=agent_slug,
+            )
+            await self._require_agent_manager(
+                session,
+                access=access,
+                agent_profile_id=agent.agent_profile_id,
+                principal_id=principal_id,
+            )
+            current_policy = await self._agent_access_policy(
+                session,
+                workspace_id=access.workspace_id,
+                agent_profile_id=agent.agent_profile_id,
+                for_update=True,
+            )
+            if current_policy is access_policy:
+                explicit_role = await self._content_grant(
+                    session,
+                    workspace_id=access.workspace_id,
+                    agent_profile_id=agent.agent_profile_id,
+                    principal_id=principal_id,
+                )
+                return AgentSummary(
+                    agent_profile_id=agent.agent_profile_id,
+                    slug=agent.slug,
+                    display_alias=agent.display_alias,
+                    content_role=(
+                        explicit_role
+                        or (
+                            AgentGrantRole.READER
+                            if current_policy
+                            is AgentAccessPolicy.WORKSPACE_READ
+                            else None
+                        )
+                    ),
+                    explicit_content_role=explicit_role,
+                    access_policy=current_policy,
+                    can_manage=True,
+                    created_at=agent.created_at,
+                )
+
+            explicit_role = await self._content_grant(
+                session,
+                workspace_id=access.workspace_id,
+                agent_profile_id=agent.agent_profile_id,
+                principal_id=principal_id,
+            )
+            if (
+                access_policy is AgentAccessPolicy.WORKSPACE_READ
+                and explicit_role is None
+                and (
+                    access.role not in _WORKSPACE_ADMIN_ROLES
+                    or not allow_admin_self_grant
+                )
+            ):
+                raise SelfGrantDisabled(
+                    "administrator content self-grant is disabled by deployment policy"
+                )
+            if (
+                access_policy is AgentAccessPolicy.WORKSPACE_READ
+                and explicit_role is None
+                and self_grant_confirmed is not True
+            ):
+                raise SelfGrantConfirmationRequired(
+                    "administrator content self-grant requires explicit confirmation"
+                )
+
+            values = self._signed(
+                "agent_access_policy",
+                workspace_id=access.workspace_id,
+                agent_profile_id=agent.agent_profile_id,
+                access_policy=access_policy.value,
+            )
+            await session.execute(
+                pg_insert(self._tables.agent_access_policies)
+                .values(**values)
+                .on_conflict_do_update(
+                    index_elements=[
+                        self._tables.agent_access_policies.c.agent_profile_id
+                    ],
+                    set_={
+                        "access_policy": access_policy.value,
+                        "integrity_version": values["integrity_version"],
+                        "integrity_tag": values["integrity_tag"],
+                        "updated_at": func.now(),
+                    },
+                )
+            )
+            await self._audit(
+                session,
+                workspace_id=access.workspace_id,
+                actor_principal_id=principal_id,
+                action=(
+                    "agent.workspace_read.enable"
+                    if access_policy is AgentAccessPolicy.WORKSPACE_READ
+                    else "agent.workspace_read.disable"
+                ),
                 target_kind="agent",
                 target_id=agent.agent_profile_id,
             )
@@ -2037,6 +2234,11 @@ class ManagementStore:
                 agent_profile_id=agent.agent_profile_id,
                 principal_id=principal_id,
             )
+            access_policy = await self._agent_access_policy(
+                session,
+                workspace_id=access.workspace_id,
+                agent_profile_id=agent.agent_profile_id,
+            )
             rows = (
                 await session.execute(
                     select(self._tables.workspace_members).where(
@@ -2069,6 +2271,18 @@ class ManagementStore:
                         email=profile.email,
                         display_name=profile.display_name,
                     )
+                explicit_content_role = await self._content_grant(
+                    session,
+                    workspace_id=access.workspace_id,
+                    agent_profile_id=agent.agent_profile_id,
+                    principal_id=row.principal_id,
+                )
+                effective_content_role = explicit_content_role
+                if (
+                    effective_content_role is None
+                    and access_policy is AgentAccessPolicy.WORKSPACE_READ
+                ):
+                    effective_content_role = AgentGrantRole.READER
                 members.append(
                     MemberAccess(
                         principal_id=row.principal_id,
@@ -2079,12 +2293,8 @@ class ManagementStore:
                             else None
                         ),
                         workspace_role=WorkspaceRole(row.role),
-                        content_role=await self._content_grant(
-                            session,
-                            workspace_id=access.workspace_id,
-                            agent_profile_id=agent.agent_profile_id,
-                            principal_id=row.principal_id,
-                        ),
+                        content_role=explicit_content_role,
+                        effective_content_role=effective_content_role,
                         explicit_manager=await self._is_explicit_manager(
                             session,
                             workspace_id=access.workspace_id,

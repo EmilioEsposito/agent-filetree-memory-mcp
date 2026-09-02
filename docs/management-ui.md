@@ -97,11 +97,25 @@ the API performs and audits that self-grant. Confirmation is required by the
 API as well as the browser, so bypassing the UI cannot make the escalation
 implicit.
 
+Each agent is private by default. A manager may explicitly enable
+`workspace_read`, which gives every current and future workspace member an
+inherited reader role for that agent only. Individual editor or full-access
+grants take precedence, while removing a principal from the workspace ends
+inherited access immediately. Enabling or disabling workspace read is audited.
+If enabling it would give the acting administrator content access for the first
+time, the same deployment policy and explicit confirmation required for a
+self-grant apply.
+
 The `afm_0004` migration adds workspace policies but intentionally does not
 backfill manager or content-grant rows for existing agents. A missing policy row
 uses the least-permissive `invite_only` and `admins_only` defaults until an
 administrator saves an explicit policy.
 
+The `afm_0005` migration adds per-agent access policies without backfilling
+existing agents. A missing row is interpreted as `private`; newly created agents
+receive a signed private policy row atomically with their profile and creator
+grants.
+
 The UI has no decryption shortcut. It invokes the same authorization-first
 `MemoryService` used by MCP, and encrypted content is decrypted only after the
-current principal has an applicable content grant.
+current principal has an applicable explicit or inherited content role.

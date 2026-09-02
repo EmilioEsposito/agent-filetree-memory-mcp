@@ -1,4 +1,5 @@
 import type {
+  AgentAccessPolicy,
   AgentSummary,
   ContentRole,
   CurrentPrincipal,
@@ -174,6 +175,26 @@ export function updateAgentAlias(
       method: "PATCH",
       body: JSON.stringify({ display_alias: displayAlias }),
     }
+  );
+}
+
+export function setAgentAccessPolicy(
+  getIdToken: TokenGetter,
+  workspace: string,
+  agent: string,
+  accessPolicy: AgentAccessPolicy,
+  confirmSelfGrant = false,
+) {
+  return memoryApi<AgentSummary>(
+    getIdToken,
+    `/workspaces/${segment(workspace)}/agents/${segment(agent)}/access-policy`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        access_policy: accessPolicy,
+        confirm_self_grant: confirmSelfGrant,
+      }),
+    },
   );
 }
 

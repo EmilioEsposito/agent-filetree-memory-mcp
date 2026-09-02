@@ -20,6 +20,7 @@ from .management_store import (
 )
 from .namespace_store import (
     DEFAULT_SCHEMA,
+    AgentAccessPolicy,
     AgentGrantRole,
     NamespaceBinding,
     NamespaceStore,
@@ -35,6 +36,7 @@ from .namespace_store import (
 
 __all__ = [
     "DEFAULT_SCHEMA",
+    "AgentAccessPolicy",
     "AgentGrantRole",
     "AgentSummary",
     "EntitlementResolver",

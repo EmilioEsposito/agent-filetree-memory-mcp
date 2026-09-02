@@ -12,6 +12,10 @@ from agent_filetree_memory.control_plane.api import (
     ManagementPrincipal,
     create_management_api,
 )
+from agent_filetree_memory.control_plane.namespace_store import (
+    AgentAccessPolicy,
+    AgentGrantRole,
+)
 from agent_filetree_memory.domain.models import (
     HistoricalDocument,
     MemoryAction,
@@ -30,6 +34,19 @@ class _ManagementStore:
 
     async def ensure_local_scope(self, **kwargs) -> None:
         self.calls.append(("scope", kwargs))
+
+    async def set_agent_access_policy(self, **kwargs):
+        self.calls.append(("agent-access-policy", kwargs))
+        return SimpleNamespace(
+            agent_profile_id="agent-1",
+            slug=kwargs["agent_slug"],
+            display_alias="Example agent",
+            content_role=AgentGrantRole.READER,
+            explicit_content_role=None,
+            access_policy=kwargs["access_policy"],
+            can_manage=True,
+            created_at=datetime(2026, 9, 2, tzinfo=timezone.utc),
+        )
 
 
 async def _principal(
@@ -75,6 +92,7 @@ def test_management_api_uses_injected_identity_and_separate_policy() -> None:
         "workspace_admins_list_all_agents": True,
         "management_implies_content_access": False,
         "content_roles": ["reader", "editor", "full_access"],
+        "agent_access_policies": ["private", "workspace_read"],
         "workspace_admission_policies": [
             "invite_only",
             "all_authenticated",
@@ -86,6 +104,49 @@ def test_management_api_uses_injected_identity_and_separate_policy() -> None:
         ],
     }
     assert store.calls[0][0] == "principal"
+
+
+def test_agent_access_policy_endpoint_requires_an_explicit_policy() -> None:
+    store = _ManagementStore()
+    app = create_management_api(
+        management_store=store,
+        namespace_store=object(),
+        memory_service=object(),
+        principal_dependency=_principal,
+        allow_admin_self_grant=True,
+    )
+    headers = {"Authorization": "Bearer verified"}
+    with TestClient(app) as client:
+        response = client.put(
+            "/workspaces/team/agents/assistant/access-policy",
+            headers=headers,
+            json={
+                "access_policy": "workspace_read",
+                "confirm_self_grant": True,
+            },
+        )
+        invalid = client.put(
+            "/workspaces/team/agents/assistant/access-policy",
+            headers=headers,
+            json={"access_policy": "workspace_write"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["access_policy"] == "workspace_read"
+    assert response.json()["content_role"] == "reader"
+    assert response.json()["explicit_content_role"] is None
+    assert invalid.status_code == 422
+    assert (
+        "agent-access-policy",
+        {
+            "principal_id": "oidc:tenant:person",
+            "workspace_slug": "team",
+            "agent_slug": "assistant",
+            "access_policy": AgentAccessPolicy.WORKSPACE_READ,
+            "allow_admin_self_grant": True,
+            "self_grant_confirmed": True,
+        },
+    ) in store.calls
 
 
 def test_local_scope_bootstrap_is_explicit_and_idempotent_by_store() -> None:
