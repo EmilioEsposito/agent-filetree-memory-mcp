@@ -1402,7 +1402,7 @@ function MemoryPanel(props: MemoryPanelProps) {
                     className={INPUT}
                     value={props.newDocumentFolder}
                     onChange={(event) => props.onNewFolder(event.target.value)}
-                    placeholder="Folder (optional)"
+                    placeholder="Folder (opt.)"
                   />
                   <input
                     aria-label="New file name"

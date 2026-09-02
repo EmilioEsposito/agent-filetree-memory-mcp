@@ -111,7 +111,7 @@ def test_bundled_frontend_has_view_first_memory_controls() -> None:
     )
 
     assert "Add file" in javascript
-    assert "Folder (optional)" in javascript
+    assert "Folder (opt.)" in javascript
     assert "filename.md" in javascript
     assert "Create file" in javascript
     assert "This file is empty." in javascript
