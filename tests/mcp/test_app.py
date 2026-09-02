@@ -137,9 +137,13 @@ async def test_open_payload_bootstraps_without_plaintext_memory_or_scope(
     assert state["selected"] == {}
     component_types = _component_types(payload["view"])
     assert "Textarea" in component_types
+    assert "Markdown" in component_types
     assert "Dialog" in component_types
     assert "Text" in component_types
-    assert "Markdown" not in component_types
+    encoded_view = json.dumps(payload["view"])
+    assert "Add file" in encoded_view
+    assert "Folder (optional)" in encoded_view
+    assert "filename.md" in encoded_view
     for local_name in (
         "ui_memory_list",
         "ui_memory_read",
@@ -169,6 +173,7 @@ async def test_ui_backend_calls_are_hashed_and_use_current_context(
         )
 
     assert listing.data["documents"][0]["path"] == PRIVATE_PATH
+    assert listing.data["folder_input"] == "private"
     assert document.data["content"] == PRIVATE_CONTENT
     assert [action for _, action in resolver.calls] == [
         MemoryAction.LIST,
@@ -389,7 +394,7 @@ async def test_app_instance_is_required_and_forgery_fails_before_storage(
     assert service.calls == []
 
 
-async def test_untrusted_markdown_is_data_not_an_active_renderer(
+async def test_untrusted_markdown_is_not_embedded_in_the_initial_renderer(
     service, resolver
 ):
     malicious = (
@@ -412,7 +417,7 @@ async def test_untrusted_markdown_is_data_not_an_active_renderer(
     component_types = _component_types(opened.structured_content["view"])
     assert "Textarea" in component_types
     assert "Text" in component_types
-    assert "Markdown" not in component_types
+    assert "Markdown" in component_types
 
 
 async def test_app_resource_is_bundled_mcp_app_with_no_network_csp(

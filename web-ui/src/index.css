@@ -25,14 +25,45 @@ textarea {
 
 .markdown-preview {
   line-height: 1.7;
+  color: #1f2937;
 }
 
-.markdown-preview :where(h1, h2, h3) {
+.dark .markdown-preview {
+  color: #e5e7eb;
+}
+
+.markdown-preview :where(h1, h2, h3, h4) {
   font-weight: 700;
   margin: 1.2em 0 0.5em;
+  line-height: 1.25;
 }
 
-.markdown-preview :where(p, ul, ol, pre, blockquote) {
+.markdown-preview :where(h1, h2) {
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 0.3em;
+}
+
+.dark .markdown-preview :where(h1, h2) {
+  border-bottom-color: #374151;
+}
+
+.markdown-preview h1 {
+  font-size: 1.8rem;
+}
+
+.markdown-preview h2 {
+  font-size: 1.4rem;
+}
+
+.markdown-preview h3 {
+  font-size: 1.15rem;
+}
+
+.markdown-preview > :first-child {
+  margin-top: 0;
+}
+
+.markdown-preview :where(p, ul, ol, pre, blockquote, table, hr) {
   margin: 0.75em 0;
 }
 
@@ -46,4 +77,71 @@ textarea {
   background: #111827;
   color: #f9fafb;
   padding: 0.85rem;
+}
+
+.markdown-preview :not(pre) > code {
+  border-radius: 0.25rem;
+  background: #f3f4f6;
+  padding: 0.15rem 0.3rem;
+  font-size: 0.9em;
+}
+
+.dark .markdown-preview :not(pre) > code {
+  background: #1f2937;
+}
+
+.markdown-preview a {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dark .markdown-preview a {
+  color: #93c5fd;
+}
+
+.markdown-preview blockquote {
+  border-left: 4px solid #d1d5db;
+  color: #4b5563;
+  padding-left: 1rem;
+}
+
+.dark .markdown-preview blockquote {
+  border-left-color: #4b5563;
+  color: #d1d5db;
+}
+
+.markdown-preview table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown-preview :where(th, td) {
+  border: 1px solid #d1d5db;
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+}
+
+.dark .markdown-preview :where(th, td) {
+  border-color: #4b5563;
+}
+
+.markdown-preview th {
+  background: #f9fafb;
+  font-weight: 600;
+}
+
+.dark .markdown-preview th {
+  background: #111827;
+}
+
+.markdown-preview hr {
+  border: 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.dark .markdown-preview hr {
+  border-top-color: #374151;
 }

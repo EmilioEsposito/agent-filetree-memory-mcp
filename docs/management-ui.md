@@ -32,6 +32,21 @@ URL from `ManagementFrontendConfig.mcp_base_url` and provides a copy button.
 The default `../mcp` value follows the recommended one-process layout while
 remaining relative to any host-selected service prefix.
 
+## Local UX previews
+
+The capability-scoped MCP App uses Prefab's renderer instead of the management
+React shell, but follows the same view-first document and Add file interaction.
+To inspect the real MCP App component tree without publishing or opening it in
+a live MCP host, run this from the repository root:
+
+```bash
+uv run --locked prefab serve examples/mcp_app_preview.py:preview_app --reload
+```
+
+The local preview supports the client-side Add file, Edit, and Cancel flows.
+Operations that call private MCP tools still require an MCP Apps host and are
+intentionally unavailable in the standalone renderer.
+
 ## Browser authentication modes
 
 `FrontendAuthConfig` supports three deployment-neutral modes:
