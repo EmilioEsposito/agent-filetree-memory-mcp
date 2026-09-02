@@ -36,6 +36,7 @@ def test_schema_validation_and_metadata_are_configurable():
     assert metadata.schema == "memory_2"
     assert {table.name for table in metadata.tables.values()} == {
         "_afm_control_plane_installation",
+        "agent_access_policies",
         "agent_grants",
         "agent_managers",
         "agent_profiles",
@@ -105,6 +106,7 @@ def test_packaged_revision_and_host_configuration():
     assert (location / "0002_normalize_constraint_names.py").is_file()
     assert (location / "0003_management_control_plane.py").is_file()
     assert (location / "0004_workspace_authorization_policies.py").is_file()
+    assert (location / "0005_agent_workspace_read_policy.py").is_file()
     config = Config()
     configure_host_alembic(
         config,

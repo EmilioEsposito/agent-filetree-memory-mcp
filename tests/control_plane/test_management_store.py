@@ -20,6 +20,7 @@ from agent_filetree_memory.control_plane.management_store import (
     SelfGrantDisabled,
 )
 from agent_filetree_memory.control_plane.namespace_store import (
+    AgentAccessPolicy,
     AgentGrantRole,
     NamespaceStore,
     WorkspaceAdmissionPolicy,
@@ -246,6 +247,204 @@ async def test_management_and_content_access_are_orthogonal() -> None:
                 and event.target_id == owner
                 for event in events
             )
+        finally:
+            await _delete_workspace(sessions, workspace_slug)
+
+
+@pytest.mark.live
+async def test_workspace_read_policy_is_explicit_bounded_and_audited() -> None:
+    suffix = uuid4().hex
+    workspace_slug = f"shared-{suffix}"
+    agent_slug = f"agent-{suffix}"
+    owner = f"oidc:tenant:owner-{suffix}"
+    member = f"oidc:tenant:member-{suffix}"
+
+    async with _live_stores() as (management, namespaces, sessions):
+        try:
+            await _register(management, owner, f"owner-{suffix}@example.test")
+            await _register(management, member, f"member-{suffix}@example.test")
+            await management.create_workspace(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                is_platform_admin=True,
+            )
+            created = await management.create_agent(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                display_alias="Shared agent",
+            )
+            assert created.access_policy is AgentAccessPolicy.PRIVATE
+            assert created.explicit_content_role is AgentGrantRole.ADMIN
+            await management.invite_member(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                email=f"member-{suffix}@example.test",
+                role=WorkspaceRole.MEMBER,
+            )
+            assert await management.list_agents(
+                principal_id=member,
+                workspace_slug=workspace_slug,
+            ) == ()
+
+            shared = await management.set_agent_access_policy(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                access_policy=AgentAccessPolicy.WORKSPACE_READ,
+                allow_admin_self_grant=False,
+            )
+            assert shared.access_policy is AgentAccessPolicy.WORKSPACE_READ
+            member_agents = await management.list_agents(
+                principal_id=member,
+                workspace_slug=workspace_slug,
+            )
+            assert len(member_agents) == 1
+            assert member_agents[0].content_role is AgentGrantRole.READER
+            assert member_agents[0].explicit_content_role is None
+            assert member_agents[0].can_manage is False
+
+            inherited = await namespaces.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                principal_id=member,
+                action=MemoryAction.READ,
+            )
+            assert inherited.agent_role is AgentGrantRole.READER
+            with pytest.raises(AuthorizationDenied):
+                await namespaces.resolve_or_create(
+                    workspace_slug=workspace_slug,
+                    agent_slug=agent_slug,
+                    principal_id=member,
+                    action=MemoryAction.WRITE,
+                )
+
+            access = await management.list_agent_access(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+            )
+            by_principal = {item.principal_id: item for item in access}
+            assert by_principal[member].content_role is None
+            assert (
+                by_principal[member].effective_content_role
+                is AgentGrantRole.READER
+            )
+
+            await management.set_content_access(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                target_principal_id=member,
+                role=AgentGrantRole.EDITOR,
+                allow_admin_self_grant=False,
+            )
+            explicit = await management.list_agents(
+                principal_id=member,
+                workspace_slug=workspace_slug,
+            )
+            assert explicit[0].content_role is AgentGrantRole.EDITOR
+            assert explicit[0].explicit_content_role is AgentGrantRole.EDITOR
+
+            await management.set_content_access(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                target_principal_id=member,
+                role=None,
+                allow_admin_self_grant=False,
+            )
+            fallback = await management.list_agents(
+                principal_id=member,
+                workspace_slug=workspace_slug,
+            )
+            assert fallback[0].content_role is AgentGrantRole.READER
+            assert fallback[0].explicit_content_role is None
+
+            private = await management.set_agent_access_policy(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                access_policy=AgentAccessPolicy.PRIVATE,
+                allow_admin_self_grant=False,
+            )
+            assert private.access_policy is AgentAccessPolicy.PRIVATE
+            assert await management.list_agents(
+                principal_id=member,
+                workspace_slug=workspace_slug,
+            ) == ()
+
+            events = await management.list_audit_events(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+            )
+            actions = {event.action for event in events}
+            assert "agent.workspace_read.enable" in actions
+            assert "agent.workspace_read.disable" in actions
+        finally:
+            await _delete_workspace(sessions, workspace_slug)
+
+
+@pytest.mark.live
+async def test_workspace_read_cannot_bypass_self_grant_policy() -> None:
+    suffix = uuid4().hex
+    workspace_slug = f"shared-self-{suffix}"
+    agent_slug = f"agent-{suffix}"
+    owner = f"oidc:tenant:owner-{suffix}"
+    administrator = f"oidc:tenant:admin-{suffix}"
+
+    async with _live_stores() as (management, _namespaces, sessions):
+        try:
+            await _register(management, owner, f"owner-{suffix}@example.test")
+            await _register(
+                management,
+                administrator,
+                f"admin-{suffix}@example.test",
+            )
+            await management.create_workspace(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                is_platform_admin=True,
+            )
+            await management.create_agent(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                display_alias="Shared agent",
+            )
+            await management.invite_member(
+                principal_id=owner,
+                workspace_slug=workspace_slug,
+                email=f"admin-{suffix}@example.test",
+                role=WorkspaceRole.ADMIN,
+            )
+
+            with pytest.raises(SelfGrantDisabled):
+                await management.set_agent_access_policy(
+                    principal_id=administrator,
+                    workspace_slug=workspace_slug,
+                    agent_slug=agent_slug,
+                    access_policy=AgentAccessPolicy.WORKSPACE_READ,
+                    allow_admin_self_grant=False,
+                )
+            with pytest.raises(SelfGrantConfirmationRequired):
+                await management.set_agent_access_policy(
+                    principal_id=administrator,
+                    workspace_slug=workspace_slug,
+                    agent_slug=agent_slug,
+                    access_policy=AgentAccessPolicy.WORKSPACE_READ,
+                    allow_admin_self_grant=True,
+                )
+            shared = await management.set_agent_access_policy(
+                principal_id=administrator,
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                access_policy=AgentAccessPolicy.WORKSPACE_READ,
+                allow_admin_self_grant=True,
+                self_grant_confirmed=True,
+            )
+            assert shared.content_role is AgentGrantRole.READER
+            assert shared.explicit_content_role is None
         finally:
             await _delete_workspace(sessions, workspace_slug)
 

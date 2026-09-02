@@ -1,5 +1,6 @@
 export type WorkspaceRole = "owner" | "admin" | "member";
 export type ContentRole = "reader" | "editor" | "full_access";
+export type AgentAccessPolicy = "private" | "workspace_read";
 export type WorkspaceAdmissionPolicy =
   | "invite_only"
   | "all_authenticated"
@@ -31,6 +32,8 @@ export interface AgentSummary {
   slug: string;
   display_alias: string;
   content_role: ContentRole | null;
+  explicit_content_role: ContentRole | null;
+  access_policy: AgentAccessPolicy;
   can_manage: boolean;
   created_at: string;
 }
@@ -41,6 +44,7 @@ export interface MemberAccess {
   display_name: string | null;
   workspace_role: WorkspaceRole;
   content_role: ContentRole | null;
+  effective_content_role: ContentRole | null;
   explicit_manager: boolean;
 }
 

@@ -15,12 +15,14 @@ from sqlalchemy import delete, select, text, update
 from agent_filetree_memory.postgres import PostgresRuntime
 
 from agent_filetree_memory.control_plane.namespace_store import (
+    AgentAccessPolicy,
     AgentGrantRole,
     NamespaceStore,
     WorkspaceAdmissionPolicy,
     WorkspaceAgentCreationPolicy,
     WorkspaceRole,
     _record_integrity_tag,
+    agent_access_policies,
     agent_grants,
     agent_managers,
     agent_profiles,
@@ -80,6 +82,7 @@ def test_namespace_metadata_is_schema_bound_and_separates_identity_metadata() ->
         "workspace_members",
         "workspace_policies",
         "agent_profiles",
+        "agent_access_policies",
         "agent_grants",
         "agent_managers",
         "management_audit_events",
@@ -361,6 +364,188 @@ async def test_live_membership_and_agent_grants_fail_closed() -> None:
                     agent_slug=agent_slug,
                     principal_id=member,
                     action=MemoryAction.WRITE,
+                )
+        finally:
+            await _delete_workspace(session_factory, workspace_slug)
+
+
+@pytest.mark.live
+async def test_live_workspace_read_is_inherited_and_explicit_grants_win() -> None:
+    suffix = uuid4().hex
+    workspace_slug = f"workspace-read-{suffix}"
+    agent_slug = f"agent-{suffix}"
+    owner = f"oidc:tenant:owner-{suffix}"
+    member = f"oidc:tenant:member-{suffix}"
+
+    async with _live_store() as (store, session_factory):
+        try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=owner,
+            )
+            owner_binding = await store.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                principal_id=owner,
+                action=MemoryAction.DELETE,
+            )
+            async with session_factory() as session, session.begin():
+                await session.execute(
+                    workspace_members.insert().values(
+                        **_signed_values(
+                            "workspace_member",
+                            workspace_id=owner_binding.workspace_id,
+                            principal_id=member,
+                            role=WorkspaceRole.MEMBER.value,
+                        )
+                    )
+                )
+
+            with pytest.raises(AuthorizationDenied):
+                await store.resolve_or_create(
+                    workspace_slug=workspace_slug,
+                    agent_slug=agent_slug,
+                    principal_id=member,
+                    action=MemoryAction.READ,
+                )
+
+            async with session_factory() as session, session.begin():
+                policy_values = _signed_values(
+                    "agent_access_policy",
+                    workspace_id=owner_binding.workspace_id,
+                    agent_profile_id=owner_binding.agent_profile_id,
+                    access_policy=AgentAccessPolicy.WORKSPACE_READ.value,
+                )
+                await session.execute(
+                    update(agent_access_policies)
+                    .where(
+                        agent_access_policies.c.agent_profile_id
+                        == owner_binding.agent_profile_id
+                    )
+                    .values(**policy_values)
+                )
+
+            inherited = await store.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                principal_id=member,
+                action=MemoryAction.READ,
+            )
+            assert inherited.agent_role is AgentGrantRole.READER
+            with pytest.raises(AuthorizationDenied):
+                await store.resolve_or_create(
+                    workspace_slug=workspace_slug,
+                    agent_slug=agent_slug,
+                    principal_id=member,
+                    action=MemoryAction.WRITE,
+                )
+
+            async with session_factory() as session, session.begin():
+                await session.execute(
+                    agent_grants.insert().values(
+                        **_signed_values(
+                            "agent_grant",
+                            workspace_id=owner_binding.workspace_id,
+                            agent_profile_id=owner_binding.agent_profile_id,
+                            principal_id=member,
+                            role=AgentGrantRole.EDITOR.value,
+                        )
+                    )
+                )
+            explicit = await store.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                principal_id=member,
+                action=MemoryAction.WRITE,
+            )
+            assert explicit.agent_role is AgentGrantRole.EDITOR
+
+            async with session_factory() as session, session.begin():
+                await session.execute(
+                    delete(agent_grants).where(
+                        agent_grants.c.agent_profile_id
+                        == owner_binding.agent_profile_id,
+                        agent_grants.c.principal_id == member,
+                    )
+                )
+            fallback = await store.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                principal_id=member,
+                action=MemoryAction.READ,
+            )
+            assert fallback.agent_role is AgentGrantRole.READER
+
+            async with session_factory() as session, session.begin():
+                await session.execute(
+                    delete(workspace_members).where(
+                        workspace_members.c.workspace_id
+                        == owner_binding.workspace_id,
+                        workspace_members.c.principal_id == member,
+                    )
+                )
+            with pytest.raises(AuthorizationDenied):
+                await store.resolve_or_create(
+                    workspace_slug=workspace_slug,
+                    agent_slug=agent_slug,
+                    principal_id=member,
+                    action=MemoryAction.READ,
+                )
+        finally:
+            await _delete_workspace(session_factory, workspace_slug)
+
+
+@pytest.mark.live
+async def test_live_forged_workspace_read_policy_fails_closed() -> None:
+    suffix = uuid4().hex
+    workspace_slug = f"workspace-read-integrity-{suffix}"
+    agent_slug = f"agent-{suffix}"
+    owner = f"oidc:tenant:owner-{suffix}"
+    member = f"oidc:tenant:member-{suffix}"
+
+    async with _live_store() as (store, session_factory):
+        try:
+            await _seed_workspace(
+                session_factory,
+                workspace_slug=workspace_slug,
+                principal_id=owner,
+            )
+            binding = await store.resolve_or_create(
+                workspace_slug=workspace_slug,
+                agent_slug=agent_slug,
+                principal_id=owner,
+                action=MemoryAction.READ,
+            )
+            async with session_factory() as session, session.begin():
+                await session.execute(
+                    workspace_members.insert().values(
+                        **_signed_values(
+                            "workspace_member",
+                            workspace_id=binding.workspace_id,
+                            principal_id=member,
+                            role=WorkspaceRole.MEMBER.value,
+                        )
+                    )
+                )
+                await session.execute(
+                    update(agent_access_policies)
+                    .where(
+                        agent_access_policies.c.agent_profile_id
+                        == binding.agent_profile_id
+                    )
+                    .values(
+                        access_policy=AgentAccessPolicy.WORKSPACE_READ.value,
+                        integrity_tag=b"x" * 32,
+                    )
+                )
+
+            with pytest.raises(AuthorizationDenied):
+                await store.resolve_or_create(
+                    workspace_slug=workspace_slug,
+                    agent_slug=agent_slug,
+                    principal_id=member,
+                    action=MemoryAction.READ,
                 )
         finally:
             await _delete_workspace(session_factory, workspace_slug)
