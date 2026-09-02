@@ -157,15 +157,17 @@ function principalLabel(member: MemberAccess): string {
   return member.display_name || member.email || member.principal_id;
 }
 
-function joinMemoryPath(directory: string, name: string): string {
-  return directory === "/" ? `/${name}` : `${directory}/${name}`;
-}
-
-function normalizeNewPath(directory: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (trimmed.startsWith("/")) return trimmed;
-  return joinMemoryPath(directory, trimmed);
+function normalizeNewPath(
+  folder: string,
+  filename: string,
+): string {
+  const trimmedFilename = filename.trim().replace(/^\/+|\/+$/g, "");
+  if (!trimmedFilename) return "";
+  const trimmedFolder = folder.trim().replace(/^\/+|\/+$/g, "");
+  const relativePath = trimmedFolder
+    ? `${trimmedFolder}/${trimmedFilename}`
+    : trimmedFilename;
+  return `/${relativePath}`;
 }
 
 function RoleBadge({ children, tone = "gray" }: { children: ReactNode; tone?: "blue" | "green" | "amber" | "gray" }) {
@@ -251,8 +253,10 @@ function AgentMemoryManager() {
   const [editorContent, setEditorContent] = useState("");
   const [editorPath, setEditorPath] = useState("");
   const [creatingDocument, setCreatingDocument] = useState(false);
+  const [addFileOpen, setAddFileOpen] = useState(false);
+  const [newDocumentFolder, setNewDocumentFolder] = useState("");
   const [newDocumentName, setNewDocumentName] = useState("");
-  const [preview, setPreview] = useState(false);
+  const [editingDocument, setEditingDocument] = useState(false);
 
   const selectedWorkspace = useMemo(
     () => workspaces.find((item) => item.slug === selectedWorkspaceSlug) ?? null,
@@ -374,6 +378,8 @@ function AgentMemoryManager() {
         setEditorContent("");
         setEditorPath("");
         setCreatingDocument(false);
+        setEditingDocument(false);
+        setAddFileOpen(false);
       } catch (caught) {
         fail(caught);
       } finally {
@@ -781,7 +787,8 @@ function AgentMemoryManager() {
       setEditorPath(next.path);
       setEditorContent(next.content);
       setCreatingDocument(false);
-      setPreview(false);
+      setEditingDocument(false);
+      setAddFileOpen(false);
     } catch (caught) {
       fail(caught);
     } finally {
@@ -812,6 +819,7 @@ function AgentMemoryManager() {
         setDocument(saved);
         setEditorContent(saved.content);
         setCreatingDocument(false);
+        setEditingDocument(false);
         setEntries(
           await loadMemoryEntries(
             getToken,
@@ -855,14 +863,30 @@ function AgentMemoryManager() {
   }
 
   function beginNewDocument() {
-    const path = normalizeNewPath(directory, newDocumentName);
+    const path = normalizeNewPath(
+      newDocumentFolder,
+      newDocumentName,
+    );
     if (!path) return;
     setDocument(null);
     setEditorPath(path);
     setEditorContent("");
     setCreatingDocument(true);
+    setEditingDocument(true);
+    setAddFileOpen(false);
+    setNewDocumentFolder("");
     setNewDocumentName("");
-    setPreview(false);
+  }
+
+  function cancelDocumentEdit() {
+    if (creatingDocument) {
+      setCreatingDocument(false);
+      setEditorContent("");
+      setEditorPath("");
+    } else if (document) {
+      setEditorContent(document.content);
+    }
+    setEditingDocument(false);
   }
 
   async function copySelectedMcpUrl() {
@@ -1148,8 +1172,11 @@ function AgentMemoryManager() {
                     editorContent={editorContent}
                     editorPath={editorPath}
                     creatingDocument={creatingDocument}
+                    addFileOpen={addFileOpen}
+                    newDocumentFolder={newDocumentFolder}
                     newDocumentName={newDocumentName}
-                    preview={preview}
+                    editingDocument={editingDocument}
+                    editorDirty={editorDirty}
                     busy={busy}
                     canWrite={canWrite}
                     canDelete={canDelete}
@@ -1159,10 +1186,17 @@ function AgentMemoryManager() {
                     onDirectory={(path) => void openDirectory(selectedWorkspaceSlug, selectedAgentSlug, path)}
                     onDocument={(path) => void openDocument(path)}
                     onContent={setEditorContent}
+                    onAddFileOpen={setAddFileOpen}
+                    onNewFolder={setNewDocumentFolder}
                     onNewName={setNewDocumentName}
                     onBeginNew={beginNewDocument}
-                    onCancelNew={() => { setCreatingDocument(false); setEditorContent(""); setEditorPath(""); }}
-                    onPreview={setPreview}
+                    onCancelAddFile={() => {
+                      setAddFileOpen(false);
+                      setNewDocumentFolder("");
+                      setNewDocumentName("");
+                    }}
+                    onEdit={() => setEditingDocument(true)}
+                    onCancelEdit={cancelDocumentEdit}
                     onSave={() => void saveDocument()}
                     onDelete={() => void deleteDocument()}
                   />
@@ -1277,8 +1311,11 @@ interface MemoryPanelProps {
   editorContent: string;
   editorPath: string;
   creatingDocument: boolean;
+  addFileOpen: boolean;
+  newDocumentFolder: string;
   newDocumentName: string;
-  preview: boolean;
+  editingDocument: boolean;
+  editorDirty: boolean;
   busy: string;
   canWrite: boolean;
   canDelete: boolean;
@@ -1288,10 +1325,13 @@ interface MemoryPanelProps {
   onDirectory: (path: string) => void;
   onDocument: (path: string) => void;
   onContent: (content: string) => void;
+  onAddFileOpen: (open: boolean) => void;
+  onNewFolder: (folder: string) => void;
   onNewName: (name: string) => void;
   onBeginNew: () => void;
-  onCancelNew: () => void;
-  onPreview: (preview: boolean) => void;
+  onCancelAddFile: () => void;
+  onEdit: () => void;
+  onCancelEdit: () => void;
   onSave: () => void;
   onDelete: () => void;
 }
@@ -1321,7 +1361,7 @@ function MemoryPanel(props: MemoryPanelProps) {
   }
 
   return (
-    <div className="grid min-h-[520px] lg:grid-cols-[240px_minmax(0,1fr)]">
+    <div className="grid min-h-[520px] lg:grid-cols-[300px_minmax(0,1fr)]">
       <div className="border-b border-gray-200 dark:border-gray-800 lg:border-b-0 lg:border-r">
         <div className="flex flex-wrap items-center gap-1 border-b border-gray-200 px-3 py-2 dark:border-gray-800">
           {breadcrumbs.map((crumb, index) => (
@@ -1333,9 +1373,67 @@ function MemoryPanel(props: MemoryPanelProps) {
           <button aria-label="Refresh directory" className="ml-auto text-gray-400 hover:text-blue-600" onClick={() => props.onDirectory(props.directory)}><RefreshCw className={`h-4 w-4 ${props.busy === "memory-load" ? "animate-spin" : ""}`} /></button>
         </div>
         {props.canWrite && (
-          <div className="flex gap-2 border-b border-gray-200 p-2 dark:border-gray-800">
-            <input className={INPUT} value={props.newDocumentName} onChange={(event) => props.onNewName(event.target.value)} placeholder="notes.md" />
-            <button aria-label="New document" className={`${BUTTON} bg-blue-600 text-white`} disabled={!props.newDocumentName.trim()} onClick={props.onBeginNew}><FilePlus2 className="h-4 w-4" /></button>
+          <div className="border-b border-gray-200 p-2 dark:border-gray-800">
+            {!props.addFileOpen ? (
+              <button
+                className={`${BUTTON} w-full border border-dashed border-blue-300 bg-blue-50 text-blue-700 hover:border-blue-400 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300`}
+                onClick={() => {
+                  props.onNewFolder(
+                    props.directory === "/"
+                      ? ""
+                      : props.directory.replace(/^\/+/, ""),
+                  );
+                  props.onAddFileOpen(true);
+                }}
+              >
+                <Plus className="h-4 w-4" /> Add file
+              </button>
+            ) : (
+              <form
+                className="space-y-2 rounded-lg bg-gray-50 p-2 dark:bg-gray-950/50"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  props.onBeginNew();
+                }}
+              >
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    aria-label="Folder for new file"
+                    className={INPUT}
+                    value={props.newDocumentFolder}
+                    onChange={(event) => props.onNewFolder(event.target.value)}
+                    placeholder="Folder (optional)"
+                  />
+                  <input
+                    aria-label="New file name"
+                    autoFocus
+                    className={INPUT}
+                    value={props.newDocumentName}
+                    onChange={(event) => props.onNewName(event.target.value)}
+                    placeholder="filename.md"
+                  />
+                </div>
+                <p className="px-1 text-[11px] text-gray-500 dark:text-gray-400">
+                  Folder path is from root. Leave it blank to add the file at root.
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className={`${BUTTON} bg-white text-gray-700 hover:bg-gray-100 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800`}
+                    onClick={props.onCancelAddFile}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`}
+                    disabled={!props.newDocumentName.trim()}
+                  >
+                    <FilePlus2 className="h-4 w-4" /> Continue
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         )}
         <div className="max-h-80 overflow-y-auto p-2 lg:max-h-[470px]">
@@ -1358,19 +1456,40 @@ function MemoryPanel(props: MemoryPanelProps) {
             <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
               <span className="min-w-0 flex-1 truncate font-mono text-sm">{props.editorPath}</span>
               {props.document && <RoleBadge>v{props.document.version}</RoleBadge>}
-              <button className={`${BUTTON} bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200`} onClick={() => props.onPreview(!props.preview)}>{props.preview ? "Edit" : "Preview"}</button>
-              {props.canWrite && (
-                <button className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`} disabled={props.busy === "document-save"} onClick={props.onSave}>{props.busy === "document-save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save</button>
+              {props.document && props.canWrite && !props.editingDocument && (
+                <button className={`${BUTTON} bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700`} onClick={props.onEdit}>
+                  <Pencil className="h-4 w-4" /> Edit
+                </button>
               )}
-              {props.canDelete && props.document && (
+              {props.editingDocument && (
+                <button className={`${BUTTON} bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700`} onClick={props.onCancelEdit}>
+                  Cancel
+                </button>
+              )}
+              {props.canWrite && props.editingDocument && (
+                <button className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`} disabled={!props.editorDirty || props.busy === "document-save"} onClick={props.onSave}>{props.busy === "document-save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} {props.creatingDocument ? "Create file" : "Save"}</button>
+              )}
+              {props.canDelete && props.document && !props.editingDocument && (
                 <button aria-label="Delete document" className={`${BUTTON} bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-300`} disabled={props.busy === "document-delete"} onClick={props.onDelete}><Trash2 className="h-4 w-4" /></button>
               )}
-              {props.creatingDocument && <button className={`${BUTTON} bg-gray-100 dark:bg-gray-800`} onClick={props.onCancelNew}><X className="h-4 w-4" /></button>}
             </div>
-            {props.preview ? (
-              <div className="markdown-preview max-w-none overflow-auto p-5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{props.editorContent}</ReactMarkdown></div>
+            {props.editingDocument ? (
+              <textarea
+                aria-label={`Edit ${props.editorPath}`}
+                autoFocus={props.creatingDocument}
+                className="min-h-[450px] w-full resize-y bg-transparent p-5 font-mono text-sm leading-6 outline-none"
+                value={props.editorContent}
+                onChange={(event) => props.onContent(event.target.value)}
+                spellCheck={false}
+              />
             ) : (
-              <textarea className="min-h-[450px] w-full resize-y bg-transparent p-5 font-mono text-sm leading-6 outline-none disabled:text-gray-500" value={props.editorContent} readOnly={!props.canWrite} onChange={(event) => props.onContent(event.target.value)} spellCheck={false} />
+              <div className="markdown-preview min-h-[450px] max-w-none overflow-auto p-5">
+                {props.editorContent ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.editorContent}</ReactMarkdown>
+                ) : (
+                  <p className="text-sm italic text-gray-500 dark:text-gray-400">This file is empty.</p>
+                )}
+              </div>
             )}
           </>
         )}
