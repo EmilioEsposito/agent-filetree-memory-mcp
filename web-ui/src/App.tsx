@@ -452,6 +452,11 @@ function AgentMemoryManager() {
         const currentWorkspace = workspaces.find(
           (item) => item.slug === selectedWorkspaceSlug,
         );
+        // The deep link seeds selectedWorkspaceSlug before the asynchronous
+        // workspace catalog arrives. Do not clear its requested agent while
+        // that catalog is still empty; initialization will replace an invalid
+        // workspace with the first accessible one after loading completes.
+        if (!currentWorkspace) return;
         if (!currentWorkspace?.role) {
           setAgents([]);
           setSelectedAgentSlug("");
@@ -886,7 +891,11 @@ function AgentMemoryManager() {
 
   async function deleteDocument() {
     if (!selectedWorkspaceSlug || !selectedAgentSlug || !document) return;
-    if (!window.confirm(`Delete ${document.path}? It will become unreadable immediately.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${document.path} at version ${document.version}? It will become unreadable immediately.`,
+      )
+    ) return;
     await runMutation(
       "document-delete",
       async () => {
@@ -1525,7 +1534,9 @@ function MemoryPanel(props: MemoryPanelProps) {
                 <button className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`} disabled={!props.editorDirty || props.busy === "document-save"} onClick={props.onSave}>{props.busy === "document-save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} {props.creatingDocument ? "Create file" : "Save"}</button>
               )}
               {props.canDelete && props.document && !props.editingDocument && (
-                <button aria-label="Delete document" className={`${BUTTON} bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-300`} disabled={props.busy === "document-delete"} onClick={props.onDelete}><Trash2 className="h-4 w-4" /></button>
+                <button aria-label="Delete document" className={`${BUTTON} bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-300`} disabled={props.busy === "document-delete"} onClick={props.onDelete}>
+                  {props.busy === "document-delete" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Delete file
+                </button>
               )}
             </div>
             {props.editingDocument ? (
