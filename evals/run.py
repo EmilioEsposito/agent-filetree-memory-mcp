@@ -2,9 +2,12 @@
 
 import argparse
 import asyncio
+from collections import Counter
+from contextlib import AsyncExitStack
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
+from importlib.metadata import version
 import json
 from pathlib import Path
 import subprocess
@@ -16,94 +19,130 @@ from pydantic_evals import Case, Dataset
 from .cases import scenarios
 from .drivers import Recorder, api_agent, reference_agent
 from .environment import environment
-from .graders import Outcome, TaskSuccess, state_is_correct
+from .graders import Outcome, TaskSuccess, grade_outcome, state_difference
+
+FINALIZATION_TIMEOUT = 30
+
+
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def select_cases(split, names):
+    cases = scenarios()
+    unknown = set(names or ()) - {case.name for case in cases}
+    if unknown:
+        raise ValueError(f"unknown cases: {', '.join(sorted(unknown))}")
+    selected = [case for case in cases if split == "all" or case.split == split]
+    if names:
+        excluded = set(names) - {case.name for case in selected}
+        if excluded:
+            raise ValueError(
+                f"cases outside selected split: {', '.join(sorted(excluded))}; use --split all"
+            )
+        selected = [case for case in selected if case.name in names]
+    if not selected:
+        raise ValueError("no cases selected")
+    return selected
+
+
+def write_report(path, result):
+    """Checkpoint every trial so interruptions preserve completed work."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(result, indent=2, default=str) + "\n")
+    temporary.replace(path)
+
+
+async def execute_case(case, args, catalog):
+    started = time.monotonic()
+    outcome = Outcome("", {})
+    recorder = Recorder(args.max_calls)
+    resources = AsyncExitStack()
+    service = invocation = None
+    phase = "setup"
+
+    def record_error(stage, exc):
+        message = f"{type(exc).__name__}: {exc}"
+        outcome.errors.append({"phase": stage, "message": message})
+        if outcome.error is None:
+            outcome.error = f"{stage}: {message}"
+
+    try:
+        async with asyncio.timeout(args.timeout):
+            server, service, invocation = await resources.enter_async_context(
+                environment(case.files)
+            )
+            server.add_middleware(recorder)
+            async with Client(server) as client:
+                definitions = [
+                    tool.model_dump(mode="json") for tool in await client.list_tools()
+                ]
+            current_catalog = {
+                "instructions": server.instructions,
+                "tools": definitions,
+            }
+            if not catalog:
+                catalog.append(current_catalog)
+            elif catalog[0] != current_catalog:
+                raise RuntimeError("MCP catalog changed between trials")
+            phase = "agent"
+            if args.driver == "reference":
+                outcome.answer, outcome.usage = await reference_agent(server, case)
+            else:
+                await api_agent(
+                    server,
+                    case.prompt,
+                    args.model,
+                    args.max_calls,
+                    outcome,
+                    openrouter=args.driver == "openrouter",
+                    provider=args.provider,
+                )
+    except Exception as exc:
+        record_error(phase, exc)
+    finally:
+        # Even a timed-out model may have changed data. Capture that state and
+        # clean up under separate bounds after the execution timeout expires.
+        if service is not None:
+            try:
+                async with asyncio.timeout(FINALIZATION_TIMEOUT):
+                    snapshots = await service.export(invocation)
+                    outcome.files = {item.path: item.content for item in snapshots}
+            except Exception as exc:
+                record_error("snapshot", exc)
+        try:
+            async with asyncio.timeout(FINALIZATION_TIMEOUT):
+                await resources.aclose()
+        except Exception as exc:
+            record_error("cleanup", exc)
+        outcome.calls = recorder.calls
+    checks = grade_outcome(case, outcome)
+    return outcome, {
+        "case": case.name,
+        "success": all(checks.values()),
+        "checks": checks,
+        "state_difference": state_difference(case, outcome.files),
+        "duration_seconds": time.monotonic() - started,
+        **asdict(outcome),
+    }
 
 
 async def run(args):
     from dotenv import load_dotenv
 
+    selected = select_cases(args.split, args.case)
     load_dotenv(".env", override=False)
     if args.logfire:
         import logfire
 
         logfire.configure(service_name="agent-filetree-memory-evals")
         logfire.instrument_pydantic_ai()
-    selected = [
-        case for case in scenarios() if args.split == "all" or case.split == args.split
-    ]
-    if args.case:
-        selected = [case for case in selected if case.name in args.case]
-    if not selected:
-        raise ValueError("no cases selected")
-    records = []
-    catalog = []
-
-    async def task(case):
-        started = time.monotonic()
-        async with environment(case.files) as (server, service, invocation):
-            recorder = Recorder(args.max_calls)
-            server.add_middleware(recorder)
-            async with Client(server) as client:
-                definitions = [
-                    tool.model_dump(mode="json") for tool in await client.list_tools()
-                ]
-            if not catalog:
-                catalog.append(
-                    {"instructions": server.instructions, "tools": definitions}
-                )
-            outcome = Outcome("", {})
-            try:
-                async with asyncio.timeout(args.timeout):
-                    if args.driver == "reference":
-                        outcome.answer, outcome.usage = await reference_agent(
-                            server, case
-                        )
-                    else:
-                        await api_agent(
-                            server,
-                            case.prompt,
-                            args.model,
-                            args.max_calls,
-                            outcome,
-                            openrouter=args.driver == "openrouter",
-                            provider=args.provider,
-                        )
-            except Exception as exc:
-                outcome.error = f"{type(exc).__name__}: {exc}"
-            outcome.calls = recorder.calls
-            snapshots = await service.export(invocation)
-            outcome.files = {item.path: item.content for item in snapshots}
-        success = (
-            outcome.error is None
-            and state_is_correct(case, outcome.files)
-            and all(
-                t.casefold() in outcome.answer.casefold() for t in case.answer_contains
-            )
-        )
-        records.append(
-            {
-                "case": case.name,
-                "success": success,
-                "duration_seconds": time.monotonic() - started,
-                **asdict(outcome),
-            }
-        )
-        return outcome
-
-    dataset = Dataset(
-        name="memory-tools",
-        cases=[Case(name=c.name, inputs=c) for c in selected],
-        evaluators=[TaskSuccess()],
-    )
-    report = await dataset.evaluate(
-        task, name=args.label, max_concurrency=1, repeat=args.repeat
-    )
-    report.print(include_input=False, include_output=False)
-    fingerprint = lambda value: hashlib.sha256(
-        json.dumps(value, sort_keys=True).encode()
-    ).hexdigest()
+    records, catalog = [], []
+    harness = Path(__file__).parent
     result = {
-        "format_version": 1,
+        "format_version": 2,
+        "status": "running",
         "label": args.label,
         "driver": args.driver,
         "model": args.model,
@@ -115,26 +154,89 @@ async def run(args):
             subprocess.check_output(["git", "status", "--porcelain"], text=True)
         ),
         "dataset_sha256": fingerprint([asdict(c) for c in selected]),
-        "catalog_sha256": fingerprint(catalog),
+        "harness_sha256": fingerprint(
+            {
+                name: (harness / name).read_text()
+                for name in ("run.py", "drivers.py", "environment.py", "graders.py")
+            }
+        ),
+        "runtime_versions": {
+            name: version(name)
+            for name in (
+                "pydantic-ai-slim",
+                "pydantic-evals",
+                "fastmcp",
+                "SQLAlchemy",
+                "alembic",
+            )
+        },
+        "selected_cases": [case.name for case in selected],
+        "expected_trials": len(selected) * args.repeat,
+        "catalog_sha256": None,
         "catalog": catalog,
         "settings": {
             "max_calls": args.max_calls,
             "timeout": args.timeout,
+            "finalization_timeout": FINALIZATION_TIMEOUT,
             "repeat": args.repeat,
             "provider": args.provider,
             "max_tokens": 4096,
+            "request_limit": 30,
+            "total_tokens_limit": 100000,
             "reasoning_effort": "low" if args.driver == "openrouter" else None,
         },
         "runs": records,
-        "case_errors": len(report.failures),
+        "case_errors": 0,
+        "framework_errors": [],
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2, default=str) + "\n")
+    write_report(args.output, result)
+    trials = Counter()
+
+    async def task(case):
+        outcome, record = await execute_case(case, args, catalog)
+        trials[case.name] += 1
+        record["trial"] = trials[case.name]
+        records.append(record)
+        result["catalog_sha256"] = fingerprint(catalog)
+        result["case_errors"] = sum(
+            any(e["phase"] != "agent" for e in r["errors"]) for r in records
+        )
+        write_report(args.output, result)
+        return outcome
+
+    dataset = Dataset(
+        name="memory-tools",
+        cases=[Case(name=c.name, inputs=c) for c in selected],
+        evaluators=[TaskSuccess()],
+    )
+    report = await dataset.evaluate(
+        task, name=args.label, max_concurrency=1, repeat=args.repeat
+    )
+    framework_errors = [
+        {"case": failure.name, "message": failure.error_message}
+        for failure in report.failures
+    ]
+    for case in report.cases:
+        for failure in case.evaluator_failures:
+            framework_errors.append({"case": case.name, "message": str(failure)})
+    framework_errors.extend(
+        {"case": None, "message": str(failure)}
+        for failure in report.report_evaluator_failures
+    )
+    result["framework_errors"] = framework_errors
+    result["case_errors"] += len(framework_errors)
+    result["status"] = (
+        "complete" if len(records) == result["expected_trials"] else "incomplete"
+    )
+    write_report(args.output, result)
+    report.print(include_input=False, include_output=False)
     passed = sum(record["success"] for record in records)
-    print(f"{passed}/{len(selected) * args.repeat} successful; report: {args.output}")
+    print(f"{passed}/{result['expected_trials']} successful; report: {args.output}")
     return (
         0
-        if not report.failures and all(r["success"] for r in records) and records
+        if result["status"] == "complete"
+        and not result["case_errors"]
+        and all(r["success"] for r in records)
         else 1
     )
 
@@ -158,7 +260,10 @@ def main():
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--max-calls", type=int, default=40)
     parser.add_argument(
-        "--timeout", type=int, default=180, help="per-case wall-clock seconds"
+        "--timeout",
+        type=int,
+        default=180,
+        help="setup and agent wall-clock seconds; snapshot and cleanup each have a separate 30-second bound",
     )
     parser.add_argument("--label", default="local")
     parser.add_argument("--output", type=Path, default=Path("eval-results/local.json"))
@@ -172,8 +277,14 @@ def main():
         parser.error("--model provider:model is required for the api driver")
     if args.driver == "openrouter" and not args.model:
         args.model = "z-ai/glm-5.3-flash"
+    if args.provider and args.driver != "openrouter":
+        parser.error("--provider is only supported by the openrouter driver")
     if min(args.repeat, args.max_calls, args.timeout) < 1:
         parser.error("repeat, max-calls and timeout must be positive")
+    try:
+        select_cases(args.split, args.case)
+    except ValueError as exc:
+        parser.error(str(exc))
     return asyncio.run(run(args))
 
 

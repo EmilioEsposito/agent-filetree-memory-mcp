@@ -25,13 +25,15 @@ uv pip install \
 ## Database prerequisite
 
 Before starting the server, create the selected PostgreSQL schema through your
-normal database-administration process and apply the package's Alembic branch.
-The host Alembic environment must call
-`configure_host_alembic(config, schema="agent_filetree_memory")` and upgrade to
-`agent_filetree_memory@head`. See the packaged
-`agent_filetree_memory.postgres.migrations` module and its README for the exact
-host integration. Server startup intentionally performs no migration or schema
-creation.
+normal database-administration process, then run
+`agent-filetree-memory-migrate upgrade` with `DATABASE_URL` supplied through the
+environment. Verify with `agent-filetree-memory-migrate check`. Both commands
+use `AGENT_FILETREE_MEMORY_DATABASE_SCHEMA` when set.
+
+Hosts already using Alembic should register and apply the package branch through
+their existing environment. See [migrations and upgrades](migrations.md) for
+both workflows and version-table ownership. Server startup intentionally
+performs no migration or schema creation.
 
 ## Required settings
 

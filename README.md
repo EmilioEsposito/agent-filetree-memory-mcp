@@ -66,6 +66,11 @@ for database setup, security-sensitive configuration, and server startup.
 - `agent_filetree_memory.mcp_app`: an optional current-capability browser and editor.
 - `agent_filetree_memory.web`: the version-matched management API composition and bundled React UI.
 
+The package ships schema migrations; the host applies them during deployment.
+See [database migrations and upgrades](docs/migrations.md) for the standalone
+`agent-filetree-memory-migrate` command and integration with an existing Alembic
+environment.
+
 ## Version history and attribution
 
 Every retained document version has a canonical `version_created_at` timestamp.

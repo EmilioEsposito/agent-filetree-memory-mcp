@@ -11,8 +11,20 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import CheckConstraint, inspect, text
 
-from agent_filetree_memory.control_plane.namespace_store import (
-    namespace_tables_for_schema,
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    LargeBinary,
+    MetaData,
+    PrimaryKeyConstraint,
+    SmallInteger,
+    String,
+    Table,
+    UniqueConstraint,
+    func,
 )
 from agent_filetree_memory.postgres.migrations import (
     constraint_namespace_from_config,
@@ -37,6 +49,354 @@ _TABLE_NAMES = (
 )
 
 
+def _tables(schema: str, *, constraint_namespace: str) -> MetaData:
+    """Frozen revision DDL. Never replace with current application metadata."""
+
+    metadata = MetaData(schema=schema)
+
+    Table(
+        "workspaces",
+        metadata,
+        Column("workspace_id", String(32), primary_key=True),
+        Column("slug", String(63), nullable=False),
+        Column("created_by_principal_id", String(255), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        UniqueConstraint(
+            "slug",
+            name="uq_afm_workspaces_slug",
+        ),
+        CheckConstraint(
+            "slug = lower(slug)",
+            name="ck_afm_workspaces_slug_lowercase",
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_workspaces_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name="ck_afm_workspaces_integrity_tag_length",
+        ),
+        schema=schema,
+    )
+
+    Table(
+        "workspace_members",
+        metadata,
+        Column(
+            "workspace_id",
+            String(32),
+            ForeignKey(
+                f"{schema}.workspaces.workspace_id",
+                ondelete="CASCADE",
+            ),
+            nullable=False,
+        ),
+        Column("principal_id", String(255), nullable=False),
+        Column("role", String(16), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        PrimaryKeyConstraint(
+            "workspace_id",
+            "principal_id",
+            name="pk_afm_workspace_members",
+        ),
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member')",
+            name="ck_afm_workspace_members_role",
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_workspace_members_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name="ck_afm_workspace_members_integrity_tag_length",
+        ),
+        schema=schema,
+    )
+
+    Table(
+        "agent_profiles",
+        metadata,
+        Column("agent_profile_id", String(32), primary_key=True),
+        Column(
+            "workspace_id",
+            String(32),
+            ForeignKey(
+                f"{schema}.workspaces.workspace_id",
+                ondelete="CASCADE",
+            ),
+            nullable=False,
+        ),
+        Column("slug", String(63), nullable=False),
+        Column("display_alias", String(128), nullable=False),
+        Column("created_by_principal_id", String(255), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "slug",
+            name="uq_afm_agent_profiles_workspace_slug",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "agent_profile_id",
+            name="uq_afm_agent_profiles_workspace_id",
+        ),
+        CheckConstraint(
+            "slug = lower(slug)",
+            name="ck_afm_agent_profiles_slug_lowercase",
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_agent_profiles_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name="ck_afm_agent_profiles_integrity_tag_length",
+        ),
+        schema=schema,
+    )
+
+    Table(
+        "agent_grants",
+        metadata,
+        Column("workspace_id", String(32), nullable=False),
+        Column("agent_profile_id", String(32), nullable=False),
+        Column("principal_id", String(255), nullable=False),
+        Column("role", String(16), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        PrimaryKeyConstraint(
+            "agent_profile_id",
+            "principal_id",
+            name="pk_afm_agent_grants",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "agent_profile_id"],
+            [
+                f"{schema}.agent_profiles.workspace_id",
+                f"{schema}.agent_profiles.agent_profile_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_afm_agent_grants_profile",
+        ),
+        CheckConstraint(
+            "role IN ('reader', 'editor', 'admin')",
+            name="ck_afm_agent_grants_role",
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_agent_grants_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name="ck_afm_agent_grants_integrity_tag_length",
+        ),
+        schema=schema,
+    )
+
+    Table(
+        "principal_profiles",
+        metadata,
+        Column("principal_id", String(255), primary_key=True),
+        Column("email", String(254), nullable=False),
+        Column("display_name", String(128), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        Column(
+            "updated_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        UniqueConstraint(
+            "email",
+            name="uq_afm_principal_profiles_email",
+        ),
+        CheckConstraint(
+            "email = lower(email)",
+            name="ck_afm_principal_profiles_email_lowercase",
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_principal_profiles_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name="ck_afm_principal_profiles_integrity_tag_length",
+        ),
+        schema=schema,
+    )
+
+    Table(
+        "workspace_invitations",
+        metadata,
+        Column("invitation_id", String(32), primary_key=True),
+        Column(
+            "workspace_id",
+            String(32),
+            ForeignKey(
+                f"{schema}.workspaces.workspace_id",
+                ondelete="CASCADE",
+            ),
+            nullable=False,
+        ),
+        Column("email", String(254), nullable=False),
+        Column("role", String(16), nullable=False),
+        Column("invited_by_principal_id", String(255), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "email",
+            name="uq_afm_workspace_invitations_email",
+        ),
+        CheckConstraint(
+            "email = lower(email)",
+            name="ck_afm_workspace_invitations_email_lowercase",
+        ),
+        CheckConstraint(
+            "role IN ('admin', 'member')",
+            name="ck_afm_workspace_invitations_role",
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_workspace_invitations_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name="ck_afm_workspace_invitations_integrity_tag_length",
+        ),
+        schema=schema,
+    )
+
+    Table(
+        "agent_managers",
+        metadata,
+        Column("workspace_id", String(32), nullable=False),
+        Column("agent_profile_id", String(32), nullable=False),
+        Column("principal_id", String(255), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        PrimaryKeyConstraint(
+            "agent_profile_id",
+            "principal_id",
+            name="pk_afm_agent_managers",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "agent_profile_id"],
+            [
+                f"{schema}.agent_profiles.workspace_id",
+                f"{schema}.agent_profiles.agent_profile_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_afm_agent_managers_profile",
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_agent_managers_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name="ck_afm_agent_managers_integrity_tag_length",
+        ),
+        schema=schema,
+    )
+
+    management_audit_events = Table(
+        "management_audit_events",
+        metadata,
+        Column("event_id", String(32), primary_key=True),
+        Column(
+            "workspace_id",
+            String(32),
+            ForeignKey(
+                f"{schema}.workspaces.workspace_id",
+                ondelete="CASCADE",
+            ),
+            nullable=False,
+        ),
+        Column("actor_principal_id", String(255), nullable=False),
+        Column("action", String(64), nullable=False),
+        Column("target_kind", String(32), nullable=False),
+        Column("target_id", String(255), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "occurred_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_management_audit_events_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name=("ck_afm_management_audit_events_integrity_tag_length"),
+        ),
+        schema=schema,
+    )
+
+    Index(
+        "ix_afm_management_audit_workspace_time",
+        management_audit_events.c.workspace_id,
+        management_audit_events.c.occurred_at,
+    )
+
+    for table in metadata.tables.values():
+        for item in (*table.constraints, *table.indexes):
+            if item.name:
+                item.name = item.name.replace("_afm_", f"_{constraint_namespace}_")
+    return metadata
+
+
 def _column_signature(column) -> tuple[type, int | None, bool]:
     column_type = column.type
     affinity = column_type._type_affinity
@@ -58,8 +418,7 @@ def _validate_columns(inspector, schema: str, expected_table) -> None:
         for column in inspector.get_columns(expected_table.name, schema=schema)
     }
     expected = {
-        column.name: _column_signature(column)
-        for column in expected_table.columns
+        column.name: _column_signature(column) for column in expected_table.columns
     }
     if reflected != expected:
         raise RuntimeError(
@@ -70,9 +429,9 @@ def _validate_columns(inspector, schema: str, expected_table) -> None:
 
 def _validate_primary_key(inspector, schema: str, expected_table) -> None:
     reflected = tuple(
-        inspector.get_pk_constraint(
-            expected_table.name, schema=schema
-        ).get("constrained_columns")
+        inspector.get_pk_constraint(expected_table.name, schema=schema).get(
+            "constrained_columns"
+        )
         or ()
     )
     expected = tuple(column.name for column in expected_table.primary_key)
@@ -86,9 +445,7 @@ def _validate_primary_key(inspector, schema: str, expected_table) -> None:
 def _validate_unique_constraints(inspector, schema: str, expected_table) -> None:
     reflected = {
         tuple(item.get("column_names") or ())
-        for item in inspector.get_unique_constraints(
-            expected_table.name, schema=schema
-        )
+        for item in inspector.get_unique_constraints(expected_table.name, schema=schema)
     }
     expected = {
         tuple(column.name for column in constraint.columns)
@@ -110,9 +467,7 @@ def _validate_foreign_keys(inspector, schema: str, expected_table) -> None:
             tuple(item.get("referred_columns") or ()),
             str((item.get("options") or {}).get("ondelete", "")).upper(),
         )
-        for item in inspector.get_foreign_keys(
-            expected_table.name, schema=schema
-        )
+        for item in inspector.get_foreign_keys(expected_table.name, schema=schema)
     }
     expected = {
         (
@@ -133,9 +488,7 @@ def _validate_foreign_keys(inspector, schema: str, expected_table) -> None:
 def _normalized_checks(inspector, schema: str, table_name: str) -> str:
     return " ".join(
         str(item.get("sqltext") or "").lower()
-        for item in inspector.get_check_constraints(
-            table_name, schema=schema
-        )
+        for item in inspector.get_check_constraints(table_name, schema=schema)
     )
 
 
@@ -180,9 +533,7 @@ def _validate_checks(inspector, schema: str, expected_table) -> None:
 def _validate_audit_index(inspector, schema: str) -> None:
     indexes = {
         tuple(item.get("column_names") or ())
-        for item in inspector.get_indexes(
-            "management_audit_events", schema=schema
-        )
+        for item in inspector.get_indexes("management_audit_events", schema=schema)
     }
     if ("workspace_id", "occurred_at") not in indexes:
         raise RuntimeError(
@@ -192,14 +543,12 @@ def _validate_audit_index(inspector, schema: str) -> None:
 
 def _validate_existing(schema: str) -> None:
     inspector = inspect(op.get_bind())
-    tables = namespace_tables_for_schema(
+    tables = _tables(
         schema,
-        constraint_namespace=constraint_namespace_from_config(
-            op.get_context().config
-        ),
+        constraint_namespace=constraint_namespace_from_config(op.get_context().config),
     )
     for table_name in _TABLE_NAMES:
-        expected_table = tables.metadata.tables[f"{schema}.{table_name}"]
+        expected_table = tables.tables[f"{schema}.{table_name}"]
         _validate_columns(inspector, schema, expected_table)
         _validate_primary_key(inspector, schema, expected_table)
         _validate_unique_constraints(inspector, schema, expected_table)
@@ -223,14 +572,14 @@ def upgrade() -> None:
         _validate_existing(schema)
         ownership = "adopted"
     else:
-        tables = namespace_tables_for_schema(
+        tables = _tables(
             schema,
             constraint_namespace=constraint_namespace_from_config(
                 op.get_context().config
             ),
         )
         for table_name in _TABLE_NAMES:
-            tables.metadata.tables[f"{schema}.{table_name}"].create(
+            tables.tables[f"{schema}.{table_name}"].create(
                 bind=op.get_bind(),
                 checkfirst=False,
             )
@@ -260,13 +609,17 @@ def downgrade() -> None:
     existing = set(inspect(op.get_bind()).get_table_names(schema=schema))
     if _INSTALLATION_TABLE not in existing:
         return
-    ownership = op.get_bind().execute(
-        text(
-            f'SELECT ownership FROM "{schema}"."{_INSTALLATION_TABLE}" '
-            "WHERE revision = :revision"
-        ),
-        {"revision": revision},
-    ).scalar_one_or_none()
+    ownership = (
+        op.get_bind()
+        .execute(
+            text(
+                f'SELECT ownership FROM "{schema}"."{_INSTALLATION_TABLE}" '
+                "WHERE revision = :revision"
+            ),
+            {"revision": revision},
+        )
+        .scalar_one_or_none()
+    )
     if ownership not in {"created", "adopted"}:
         raise RuntimeError("control-plane installation marker is invalid")
     if ownership == "created":

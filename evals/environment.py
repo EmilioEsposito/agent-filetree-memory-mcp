@@ -17,6 +17,7 @@ from agent_filetree_memory.postgres import (
     PostgresRuntime,
     PostgresStoreConfig,
 )
+from agent_filetree_memory.postgres.migrations.runner import upgrade_schema
 
 
 @asynccontextmanager
@@ -31,7 +32,7 @@ async def environment(files):
     try:
         async with runtime.engine.begin() as connection:
             await connection.execute(text(f"CREATE SCHEMA {schema}"))
-            await connection.run_sync(runtime.tables.metadata.create_all)
+            await connection.run_sync(upgrade_schema, schema=schema)
         encryptor = EnvelopeEncryptor(
             LocalKeyringDekProvider(
                 {"eval": base64.b64encode(os.urandom(32)).decode()},
@@ -69,6 +70,8 @@ async def environment(files):
 
         yield create_mcp_server(service, resolver), service, invocation
     finally:
-        async with runtime.engine.begin() as connection:
-            await connection.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        await runtime.close()
+        try:
+            async with runtime.engine.begin() as connection:
+                await connection.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        finally:
+            await runtime.close()

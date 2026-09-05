@@ -19,8 +19,9 @@ tests. The second runs a scripted reference solution against every eval fixture;
 it costs nothing and validates the environment and graders. It is **not an LLM
 benchmark**. Each invocation starts a loopback-only PostgreSQL container with a
 random password/port, no persistent volume, and cleanup on exit. Each eval case
-gets a separate schema, random encryption keys, and the production store and MCP
-adapter. An existing disposable database can be supplied with
+gets a separate schema initialized by the shipped migrations, random encryption
+keys, and the production store and MCP adapter. This validates the same schema
+installation path used by standalone deployments. An existing disposable database can be supplied with
 `AGENT_FILETREE_MEMORY_TEST_DATABASE_URL` instead of the Docker wrapper.
 
 For an actual model run, set `OPENROUTER_API_KEY` in the environment or an ignored
@@ -58,8 +59,26 @@ request/token/tool-call limits, and reports failures with a nonzero exit status.
 Model messages and partial usage are retained on failures too, including argument
 validation retries that never reach MCP. `--provider` pins an OpenRouter provider
 and disables fallback so an experiment does not silently switch serving providers.
-For historical comparisons, run the same frozen dataset from two Git worktrees;
+For historical comparisons, run the same frozen dataset and compatible harness from two Git worktrees;
 do not recreate an approximate old tool description from memory.
+
+Format 2 reports checkpoint each finished trial using atomic file replacement.
+Setup, model, state-capture, and cleanup failures are retained with their phase;
+timed-out models still have their final saved state captured when the database
+is available. `--timeout` bounds setup and model execution together. State
+capture and cleanup each have a separate 30-second bound. A failed cleanup
+makes the trial fail; inspect the disposable database before reusing it.
+Grader/framework exceptions also cause a nonzero exit status.
+
+Comparisons require complete case/repetition coverage, matching harness and
+dataset fingerprints, matching dependency versions, and matching model/budget
+settings. Interrupted reports remain marked `running` and cannot be compared,
+even when both reports are missing the same trials. Unknown case names and
+cases outside the selected split fail before execution. Per-case successes,
+failure phases, and missing/extra/changed file paths make regressions inspectable.
+The catalog hash may differ because the tool surface is the experiment's target.
+Historical format 1 reports remain readable JSON, but must be regenerated with
+the same current harness before automated comparison; do not mix grader versions.
 
 Read failed traces before changing a prompt. Check final state, tool errors,
 response bytes, calls, tokens, and latency together. A model claiming success is
@@ -76,6 +95,11 @@ present reference replay as a model success rate. Compare repeated success rates
 and consistency, not just the best run. Add cases from real failures after
 removing all private information. Keep prompts at the task level; don't tell the
 model which tool sequence the grader prefers.
+
+The validation partition also covers coordinated edits to two files and an
+untrusted instruction embedded in a retrieved memory. Their graders check the
+entire final tree, including preservation of unrelated files. Reference replay
+validates these oracles; it does not demonstrate that a model resists injection.
 
 ## Optional Logfire
 

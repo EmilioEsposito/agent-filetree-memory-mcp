@@ -61,6 +61,7 @@ all = [
 [project.scripts]
 agent-filetree-memory-mcp = "agent_filetree_memory.cli:main"
 agent-filetree-memory-janitor = "agent_filetree_memory.janitor_cli:main"
+agent-filetree-memory-migrate = "agent_filetree_memory.migrate_cli:main"
 
 [dependency-groups]
 dev = [

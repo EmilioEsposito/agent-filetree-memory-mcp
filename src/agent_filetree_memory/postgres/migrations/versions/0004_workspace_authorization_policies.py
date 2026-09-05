@@ -11,8 +11,16 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import CheckConstraint, inspect, text
 
-from agent_filetree_memory.control_plane.namespace_store import (
-    namespace_tables_for_schema,
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    LargeBinary,
+    MetaData,
+    SmallInteger,
+    String,
+    Table,
+    func,
 )
 from agent_filetree_memory.postgres.migrations import (
     constraint_namespace_from_config,
@@ -26,6 +34,68 @@ depends_on = None
 
 _INSTALLATION_TABLE = "_afm_control_plane_installation"
 _POLICY_TABLE = "workspace_policies"
+
+
+def _tables(schema: str, *, constraint_namespace: str) -> MetaData:
+    """Frozen revision DDL. Never replace with current application metadata."""
+
+    metadata = MetaData(schema=schema)
+
+    Table("workspaces", metadata, Column("workspace_id", String(32), primary_key=True))
+
+    Table(
+        "workspace_policies",
+        metadata,
+        Column(
+            "workspace_id",
+            String(32),
+            ForeignKey(
+                f"{schema}.workspaces.workspace_id",
+                ondelete="CASCADE",
+            ),
+            primary_key=True,
+        ),
+        Column("admission_policy", String(32), nullable=False),
+        Column("agent_creation_policy", String(32), nullable=False),
+        Column("integrity_version", SmallInteger, nullable=False),
+        Column("integrity_tag", LargeBinary(32), nullable=False),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        Column(
+            "updated_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        CheckConstraint(
+            "admission_policy IN ('invite_only', 'all_authenticated', "
+            "'external_entitlement')",
+            name="ck_afm_workspace_policies_admission_policy",
+        ),
+        CheckConstraint(
+            "agent_creation_policy IN ('admins_only', 'all_members')",
+            name="ck_afm_workspace_policies_agent_creation_policy",
+        ),
+        CheckConstraint(
+            "integrity_version = 1",
+            name="ck_afm_workspace_policies_integrity_version",
+        ),
+        CheckConstraint(
+            "octet_length(integrity_tag) = 32",
+            name="ck_afm_workspace_policies_integrity_tag_length",
+        ),
+        schema=schema,
+    )
+
+    for table in metadata.tables.values():
+        for item in (*table.constraints, *table.indexes):
+            if item.name:
+                item.name = item.name.replace("_afm_", f"_{constraint_namespace}_")
+    return metadata
 
 
 def _column_signature(column) -> tuple[type, int | None, bool]:
@@ -49,13 +119,10 @@ def _validate_existing(schema: str, expected_table) -> None:
         for column in inspector.get_columns(_POLICY_TABLE, schema=schema)
     }
     expected_columns = {
-        column.name: _column_signature(column)
-        for column in expected_table.columns
+        column.name: _column_signature(column) for column in expected_table.columns
     }
     if reflected_columns != expected_columns:
-        raise RuntimeError(
-            "existing workspace_policies table has incompatible columns"
-        )
+        raise RuntimeError("existing workspace_policies table has incompatible columns")
 
     primary_key = tuple(
         inspector.get_pk_constraint(_POLICY_TABLE, schema=schema).get(
@@ -125,13 +192,11 @@ def upgrade() -> None:
     """Create or safely adopt the policy table without backfilling grants."""
 
     schema = schema_from_config(op.get_context().config)
-    tables = namespace_tables_for_schema(
+    tables = _tables(
         schema,
-        constraint_namespace=constraint_namespace_from_config(
-            op.get_context().config
-        ),
+        constraint_namespace=constraint_namespace_from_config(op.get_context().config),
     )
-    policy_table = tables.workspace_policies
+    policy_table = tables.tables[f"{schema}.workspace_policies"]
     existing = set(inspect(op.get_bind()).get_table_names(schema=schema))
     if _POLICY_TABLE in existing:
         _validate_existing(schema, policy_table)
@@ -155,21 +220,24 @@ def downgrade() -> None:
     existing = set(inspect(op.get_bind()).get_table_names(schema=schema))
     if _INSTALLATION_TABLE not in existing:
         return
-    ownership = op.get_bind().execute(
-        text(
-            f'SELECT ownership FROM "{schema}"."{_INSTALLATION_TABLE}" '
-            "WHERE revision = :revision"
-        ),
-        {"revision": revision},
-    ).scalar_one_or_none()
+    ownership = (
+        op.get_bind()
+        .execute(
+            text(
+                f'SELECT ownership FROM "{schema}"."{_INSTALLATION_TABLE}" '
+                "WHERE revision = :revision"
+            ),
+            {"revision": revision},
+        )
+        .scalar_one_or_none()
+    )
     if ownership not in {"created", "adopted"}:
         raise RuntimeError("workspace policy installation marker is invalid")
     if ownership == "created":
         op.drop_table(_POLICY_TABLE, schema=schema)
     op.get_bind().execute(
         text(
-            f'DELETE FROM "{schema}"."{_INSTALLATION_TABLE}" '
-            "WHERE revision = :revision"
+            f'DELETE FROM "{schema}"."{_INSTALLATION_TABLE}" WHERE revision = :revision'
         ),
         {"revision": revision},
     )

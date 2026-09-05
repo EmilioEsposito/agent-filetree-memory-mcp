@@ -37,6 +37,9 @@ stdio round trip is also covered by the PostgreSQL integration suite.
 ## PostgreSQL integration tests
 
 - Fresh-schema migration and migration from a built wheel
+- Frozen historical migrations independent of current models
+- Incremental upgrade with existing data, transaction rollback, and migration locking
+- Read-only revision checks and rejection of unknown migration histories
 - Workspace and agent-profile isolation
 - Platform-admin metadata boundaries and platform-only workspace creation
 - Invite-only, all-authenticated, and injected external-entitlement admission
