@@ -54,6 +54,7 @@ import {
   removeMember,
   revokeInvitation,
   saveMemoryDocument,
+  setAgentAccessPolicy,
   setAgentManager,
   setContentAccess,
   transferAgentManagement,
@@ -64,6 +65,7 @@ import {
 } from "./api";
 import { mcpConnectionUrl } from "./config";
 import type {
+  AgentAccessPolicy,
   AgentSummary,
   ContentRole,
   CurrentPrincipal,
@@ -136,6 +138,21 @@ function contentRoleLabel(role: ContentRole | null): string {
   return "No content access";
 }
 
+function agentAccessPolicyLabel(policy: AgentAccessPolicy): string {
+  return policy === "workspace_read" ? "Workspace read-only" : "Private";
+}
+
+function agentContentRoleLabel(agent: AgentSummary): string {
+  if (
+    agent.content_role === "reader" &&
+    agent.explicit_content_role === null &&
+    agent.access_policy === "workspace_read"
+  ) {
+    return "Workspace reader";
+  }
+  return contentRoleLabel(agent.content_role);
+}
+
 function workspaceRoleLabel(role: WorkspaceRole | null): string {
   if (role === null) return "Platform view";
   return role[0].toUpperCase() + role.slice(1);
@@ -157,15 +174,17 @@ function principalLabel(member: MemberAccess): string {
   return member.display_name || member.email || member.principal_id;
 }
 
-function joinMemoryPath(directory: string, name: string): string {
-  return directory === "/" ? `/${name}` : `${directory}/${name}`;
-}
-
-function normalizeNewPath(directory: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (trimmed.startsWith("/")) return trimmed;
-  return joinMemoryPath(directory, trimmed);
+function normalizeNewPath(
+  folder: string,
+  filename: string,
+): string {
+  const trimmedFilename = filename.trim().replace(/^\/+|\/+$/g, "");
+  if (!trimmedFilename) return "";
+  const trimmedFolder = folder.trim().replace(/^\/+|\/+$/g, "");
+  const relativePath = trimmedFolder
+    ? `${trimmedFolder}/${trimmedFilename}`
+    : trimmedFilename;
+  return `/${relativePath}`;
 }
 
 function RoleBadge({ children, tone = "gray" }: { children: ReactNode; tone?: "blue" | "green" | "amber" | "gray" }) {
@@ -251,8 +270,10 @@ function AgentMemoryManager() {
   const [editorContent, setEditorContent] = useState("");
   const [editorPath, setEditorPath] = useState("");
   const [creatingDocument, setCreatingDocument] = useState(false);
+  const [addFileOpen, setAddFileOpen] = useState(false);
+  const [newDocumentFolder, setNewDocumentFolder] = useState("");
   const [newDocumentName, setNewDocumentName] = useState("");
-  const [preview, setPreview] = useState(false);
+  const [editingDocument, setEditingDocument] = useState(false);
 
   const selectedWorkspace = useMemo(
     () => workspaces.find((item) => item.slug === selectedWorkspaceSlug) ?? null,
@@ -374,6 +395,8 @@ function AgentMemoryManager() {
         setEditorContent("");
         setEditorPath("");
         setCreatingDocument(false);
+        setEditingDocument(false);
+        setAddFileOpen(false);
       } catch (caught) {
         fail(caught);
       } finally {
@@ -429,6 +452,11 @@ function AgentMemoryManager() {
         const currentWorkspace = workspaces.find(
           (item) => item.slug === selectedWorkspaceSlug,
         );
+        // The deep link seeds selectedWorkspaceSlug before the asynchronous
+        // workspace catalog arrives. Do not clear its requested agent while
+        // that catalog is still empty; initialization will replace an invalid
+        // workspace with the first accessible one after loading completes.
+        if (!currentWorkspace) return;
         if (!currentWorkspace?.role) {
           setAgents([]);
           setSelectedAgentSlug("");
@@ -588,6 +616,40 @@ function AgentMemoryManager() {
         setEditingAlias(false);
       },
       "Agent display name updated.",
+    ).catch(() => undefined);
+  }
+
+  async function handleAgentAccessPolicy(next: AgentAccessPolicy) {
+    if (!selectedWorkspaceSlug || !selectedAgentSlug || !selectedAgent) return;
+    if (
+      next === "workspace_read" &&
+      !window.confirm(
+        `Share ${selectedAgent.display_alias} read-only with every current and future member of ${selectedWorkspaceSlug}? Editing and deletion will still require an explicit individual role.`,
+      )
+    ) {
+      return;
+    }
+    await runMutation(
+      "agent-access-policy",
+      async () => {
+        await setAgentAccessPolicy(
+          getToken,
+          selectedWorkspaceSlug,
+          selectedAgentSlug,
+          next,
+          next === "workspace_read",
+        );
+        await Promise.all([
+          refreshAgents(selectedWorkspaceSlug),
+          refreshAgentAccess(selectedWorkspaceSlug, selectedAgentSlug),
+          workspaceAdmin
+            ? refreshAudit(selectedWorkspaceSlug)
+            : Promise.resolve(),
+        ]);
+      },
+      next === "workspace_read"
+        ? "Everyone in this workspace can now read this memory store."
+        : "This memory store is private again; explicit individual access is unchanged.",
     ).catch(() => undefined);
   }
 
@@ -781,7 +843,8 @@ function AgentMemoryManager() {
       setEditorPath(next.path);
       setEditorContent(next.content);
       setCreatingDocument(false);
-      setPreview(false);
+      setEditingDocument(false);
+      setAddFileOpen(false);
     } catch (caught) {
       fail(caught);
     } finally {
@@ -812,6 +875,7 @@ function AgentMemoryManager() {
         setDocument(saved);
         setEditorContent(saved.content);
         setCreatingDocument(false);
+        setEditingDocument(false);
         setEntries(
           await loadMemoryEntries(
             getToken,
@@ -827,7 +891,11 @@ function AgentMemoryManager() {
 
   async function deleteDocument() {
     if (!selectedWorkspaceSlug || !selectedAgentSlug || !document) return;
-    if (!window.confirm(`Delete ${document.path}? It will become unreadable immediately.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${document.path} at version ${document.version}? It will become unreadable immediately.`,
+      )
+    ) return;
     await runMutation(
       "document-delete",
       async () => {
@@ -855,14 +923,30 @@ function AgentMemoryManager() {
   }
 
   function beginNewDocument() {
-    const path = normalizeNewPath(directory, newDocumentName);
+    const path = normalizeNewPath(
+      newDocumentFolder,
+      newDocumentName,
+    );
     if (!path) return;
     setDocument(null);
     setEditorPath(path);
     setEditorContent("");
     setCreatingDocument(true);
+    setEditingDocument(true);
+    setAddFileOpen(false);
+    setNewDocumentFolder("");
     setNewDocumentName("");
-    setPreview(false);
+  }
+
+  function cancelDocumentEdit() {
+    if (creatingDocument) {
+      setCreatingDocument(false);
+      setEditorContent("");
+      setEditorPath("");
+    } else if (document) {
+      setEditorContent(document.content);
+    }
+    setEditingDocument(false);
   }
 
   async function copySelectedMcpUrl() {
@@ -1043,7 +1127,8 @@ function AgentMemoryManager() {
                   <div className="truncate text-xs text-gray-500 dark:text-gray-400">{agent.slug}</div>
                   <div className="mt-2 flex flex-wrap gap-1">
                     {agent.can_manage && <RoleBadge tone="blue">Manage</RoleBadge>}
-                    <RoleBadge tone={agent.content_role ? "green" : "gray"}>{contentRoleLabel(agent.content_role)}</RoleBadge>
+                    <RoleBadge tone={agent.access_policy === "workspace_read" ? "blue" : "gray"}>{agentAccessPolicyLabel(agent.access_policy)}</RoleBadge>
+                    <RoleBadge tone={agent.content_role ? "green" : "gray"}>{agentContentRoleLabel(agent)}</RoleBadge>
                   </div>
                 </button>
               ))}
@@ -1093,7 +1178,8 @@ function AgentMemoryManager() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {selectedAgent.can_manage && <RoleBadge tone="blue">Can manage</RoleBadge>}
-                      <RoleBadge tone={selectedAgent.content_role ? "green" : "gray"}>{contentRoleLabel(selectedAgent.content_role)}</RoleBadge>
+                      <RoleBadge tone={selectedAgent.access_policy === "workspace_read" ? "blue" : "gray"}>{agentAccessPolicyLabel(selectedAgent.access_policy)}</RoleBadge>
+                      <RoleBadge tone={selectedAgent.content_role ? "green" : "gray"}>{agentContentRoleLabel(selectedAgent)}</RoleBadge>
                     </div>
                   </div>
                   {selectedMcpUrl && (
@@ -1148,8 +1234,11 @@ function AgentMemoryManager() {
                     editorContent={editorContent}
                     editorPath={editorPath}
                     creatingDocument={creatingDocument}
+                    addFileOpen={addFileOpen}
+                    newDocumentFolder={newDocumentFolder}
                     newDocumentName={newDocumentName}
-                    preview={preview}
+                    editingDocument={editingDocument}
+                    editorDirty={editorDirty}
                     busy={busy}
                     canWrite={canWrite}
                     canDelete={canDelete}
@@ -1159,10 +1248,17 @@ function AgentMemoryManager() {
                     onDirectory={(path) => void openDirectory(selectedWorkspaceSlug, selectedAgentSlug, path)}
                     onDocument={(path) => void openDocument(path)}
                     onContent={setEditorContent}
+                    onAddFileOpen={setAddFileOpen}
+                    onNewFolder={setNewDocumentFolder}
                     onNewName={setNewDocumentName}
                     onBeginNew={beginNewDocument}
-                    onCancelNew={() => { setCreatingDocument(false); setEditorContent(""); setEditorPath(""); }}
-                    onPreview={setPreview}
+                    onCancelAddFile={() => {
+                      setAddFileOpen(false);
+                      setNewDocumentFolder("");
+                      setNewDocumentName("");
+                    }}
+                    onEdit={() => setEditingDocument(true)}
+                    onCancelEdit={cancelDocumentEdit}
                     onSave={() => void saveDocument()}
                     onDelete={() => void deleteDocument()}
                   />
@@ -1170,11 +1266,13 @@ function AgentMemoryManager() {
 
                 {tab === "access" && selectedAgent.can_manage && (
                   <AccessPanel
+                    agent={selectedAgent}
                     members={agentAccess}
                     currentPrincipalId={me?.principal_id ?? ""}
                     currentWorkspaceRole={selectedWorkspace?.role ?? "member"}
                     allowAdminSelfGrant={me?.allow_admin_self_grant ?? false}
                     busy={busy}
+                    onAccessPolicy={(policy) => void handleAgentAccessPolicy(policy)}
                     onRole={(member, role) => void applyContentRole(member, role)}
                     onManager={(member, next) => void handleManagerChange(member, next)}
                     onTransfer={(member) => void handleManagerTransfer(member)}
@@ -1277,8 +1375,11 @@ interface MemoryPanelProps {
   editorContent: string;
   editorPath: string;
   creatingDocument: boolean;
+  addFileOpen: boolean;
+  newDocumentFolder: string;
   newDocumentName: string;
-  preview: boolean;
+  editingDocument: boolean;
+  editorDirty: boolean;
   busy: string;
   canWrite: boolean;
   canDelete: boolean;
@@ -1288,10 +1389,13 @@ interface MemoryPanelProps {
   onDirectory: (path: string) => void;
   onDocument: (path: string) => void;
   onContent: (content: string) => void;
+  onAddFileOpen: (open: boolean) => void;
+  onNewFolder: (folder: string) => void;
   onNewName: (name: string) => void;
   onBeginNew: () => void;
-  onCancelNew: () => void;
-  onPreview: (preview: boolean) => void;
+  onCancelAddFile: () => void;
+  onEdit: () => void;
+  onCancelEdit: () => void;
   onSave: () => void;
   onDelete: () => void;
 }
@@ -1321,7 +1425,7 @@ function MemoryPanel(props: MemoryPanelProps) {
   }
 
   return (
-    <div className="grid min-h-[520px] lg:grid-cols-[240px_minmax(0,1fr)]">
+    <div className="grid min-h-[520px] lg:grid-cols-[300px_minmax(0,1fr)]">
       <div className="border-b border-gray-200 dark:border-gray-800 lg:border-b-0 lg:border-r">
         <div className="flex flex-wrap items-center gap-1 border-b border-gray-200 px-3 py-2 dark:border-gray-800">
           {breadcrumbs.map((crumb, index) => (
@@ -1333,9 +1437,67 @@ function MemoryPanel(props: MemoryPanelProps) {
           <button aria-label="Refresh directory" className="ml-auto text-gray-400 hover:text-blue-600" onClick={() => props.onDirectory(props.directory)}><RefreshCw className={`h-4 w-4 ${props.busy === "memory-load" ? "animate-spin" : ""}`} /></button>
         </div>
         {props.canWrite && (
-          <div className="flex gap-2 border-b border-gray-200 p-2 dark:border-gray-800">
-            <input className={INPUT} value={props.newDocumentName} onChange={(event) => props.onNewName(event.target.value)} placeholder="notes.md" />
-            <button aria-label="New document" className={`${BUTTON} bg-blue-600 text-white`} disabled={!props.newDocumentName.trim()} onClick={props.onBeginNew}><FilePlus2 className="h-4 w-4" /></button>
+          <div className="border-b border-gray-200 p-2 dark:border-gray-800">
+            {!props.addFileOpen ? (
+              <button
+                className={`${BUTTON} w-full border border-dashed border-blue-300 bg-blue-50 text-blue-700 hover:border-blue-400 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300`}
+                onClick={() => {
+                  props.onNewFolder(
+                    props.directory === "/"
+                      ? ""
+                      : props.directory.replace(/^\/+/, ""),
+                  );
+                  props.onAddFileOpen(true);
+                }}
+              >
+                <Plus className="h-4 w-4" /> Add file
+              </button>
+            ) : (
+              <form
+                className="space-y-2 rounded-lg bg-gray-50 p-2 dark:bg-gray-950/50"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  props.onBeginNew();
+                }}
+              >
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    aria-label="Folder for new file"
+                    className={INPUT}
+                    value={props.newDocumentFolder}
+                    onChange={(event) => props.onNewFolder(event.target.value)}
+                    placeholder="Folder (opt.)"
+                  />
+                  <input
+                    aria-label="New file name"
+                    autoFocus
+                    className={INPUT}
+                    value={props.newDocumentName}
+                    onChange={(event) => props.onNewName(event.target.value)}
+                    placeholder="filename.md"
+                  />
+                </div>
+                <p className="px-1 text-[11px] text-gray-500 dark:text-gray-400">
+                  Folder path is from root. Leave it blank to add the file at root.
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className={`${BUTTON} bg-white text-gray-700 hover:bg-gray-100 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800`}
+                    onClick={props.onCancelAddFile}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`}
+                    disabled={!props.newDocumentName.trim()}
+                  >
+                    <FilePlus2 className="h-4 w-4" /> Continue
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         )}
         <div className="max-h-80 overflow-y-auto p-2 lg:max-h-[470px]">
@@ -1358,19 +1520,42 @@ function MemoryPanel(props: MemoryPanelProps) {
             <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
               <span className="min-w-0 flex-1 truncate font-mono text-sm">{props.editorPath}</span>
               {props.document && <RoleBadge>v{props.document.version}</RoleBadge>}
-              <button className={`${BUTTON} bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200`} onClick={() => props.onPreview(!props.preview)}>{props.preview ? "Edit" : "Preview"}</button>
-              {props.canWrite && (
-                <button className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`} disabled={props.busy === "document-save"} onClick={props.onSave}>{props.busy === "document-save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save</button>
+              {props.document && props.canWrite && !props.editingDocument && (
+                <button className={`${BUTTON} bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700`} onClick={props.onEdit}>
+                  <Pencil className="h-4 w-4" /> Edit
+                </button>
               )}
-              {props.canDelete && props.document && (
-                <button aria-label="Delete document" className={`${BUTTON} bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-300`} disabled={props.busy === "document-delete"} onClick={props.onDelete}><Trash2 className="h-4 w-4" /></button>
+              {props.editingDocument && (
+                <button className={`${BUTTON} bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700`} onClick={props.onCancelEdit}>
+                  Cancel
+                </button>
               )}
-              {props.creatingDocument && <button className={`${BUTTON} bg-gray-100 dark:bg-gray-800`} onClick={props.onCancelNew}><X className="h-4 w-4" /></button>}
+              {props.canWrite && props.editingDocument && (
+                <button className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`} disabled={!props.editorDirty || props.busy === "document-save"} onClick={props.onSave}>{props.busy === "document-save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} {props.creatingDocument ? "Create file" : "Save"}</button>
+              )}
+              {props.canDelete && props.document && !props.editingDocument && (
+                <button aria-label="Delete document" className={`${BUTTON} bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-300`} disabled={props.busy === "document-delete"} onClick={props.onDelete}>
+                  {props.busy === "document-delete" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Delete file
+                </button>
+              )}
             </div>
-            {props.preview ? (
-              <div className="markdown-preview max-w-none overflow-auto p-5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{props.editorContent}</ReactMarkdown></div>
+            {props.editingDocument ? (
+              <textarea
+                aria-label={`Edit ${props.editorPath}`}
+                autoFocus={props.creatingDocument}
+                className="min-h-[450px] w-full resize-y bg-transparent p-5 font-mono text-sm leading-6 outline-none"
+                value={props.editorContent}
+                onChange={(event) => props.onContent(event.target.value)}
+                spellCheck={false}
+              />
             ) : (
-              <textarea className="min-h-[450px] w-full resize-y bg-transparent p-5 font-mono text-sm leading-6 outline-none disabled:text-gray-500" value={props.editorContent} readOnly={!props.canWrite} onChange={(event) => props.onContent(event.target.value)} spellCheck={false} />
+              <div className="markdown-preview min-h-[450px] max-w-none overflow-auto p-5">
+                {props.editorContent ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.editorContent}</ReactMarkdown>
+                ) : (
+                  <p className="text-sm italic text-gray-500 dark:text-gray-400">This file is empty.</p>
+                )}
+              </div>
             )}
           </>
         )}
@@ -1390,21 +1575,53 @@ function EmptyStateWithAction({ icon, title, body, children }: { icon: ReactNode
   );
 }
 
-function AccessPanel({ members, currentPrincipalId, currentWorkspaceRole, allowAdminSelfGrant, busy, onRole, onManager, onTransfer }: {
+function AccessPanel({ agent, members, currentPrincipalId, currentWorkspaceRole, allowAdminSelfGrant, busy, onAccessPolicy, onRole, onManager, onTransfer }: {
+  agent: AgentSummary;
   members: MemberAccess[];
   currentPrincipalId: string;
   currentWorkspaceRole: WorkspaceRole;
   allowAdminSelfGrant: boolean;
   busy: string;
+  onAccessPolicy: (policy: AgentAccessPolicy) => void;
   onRole: (member: MemberAccess, role: ContentRole | null) => void;
   onManager: (member: MemberAccess, next: boolean) => void;
   onTransfer: (member: MemberAccess) => void;
 }) {
   const workspaceAdmin = currentWorkspaceRole === "owner" || currentWorkspaceRole === "admin";
+  const workspaceRead = agent.access_policy === "workspace_read";
+  const canChangePolicy = workspaceRead || Boolean(agent.content_role) || (workspaceAdmin && allowAdminSelfGrant);
   return (
     <div className="p-5">
+      <div className="mb-5 flex flex-col gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-950/40 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex gap-3">
+          <div className={`mt-0.5 rounded-full p-2 ${workspaceRead ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300" : "bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300"}`}>
+            {workspaceRead ? <Users className="h-5 w-5" /> : <LockKeyhole className="h-5 w-5" />}
+          </div>
+          <div>
+            <p className="font-semibold">Workspace read-only access</p>
+            <p className="mt-1 max-w-2xl text-sm text-gray-600 dark:text-gray-300">
+              {workspaceRead
+                ? "Every current and future workspace member can read this store. Editing and deletion still require an explicit individual role."
+                : "Only people with an explicit individual content role can read this store."}
+            </p>
+            {!canChangePolicy && (
+              <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">You need content access to share this store. Administrator self-grants are disabled.</p>
+            )}
+          </div>
+        </div>
+        <button
+          aria-label="Share this memory store read-only with the workspace"
+          aria-pressed={workspaceRead}
+          className={`${BUTTON} min-w-36 shrink-0 ${workspaceRead ? "bg-blue-600 text-white hover:bg-blue-700" : "border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"}`}
+          disabled={!canChangePolicy || busy === "agent-access-policy"}
+          onClick={() => onAccessPolicy(workspaceRead ? "private" : "workspace_read")}
+        >
+          {busy === "agent-access-policy" ? <Loader2 className="h-4 w-4 animate-spin" /> : workspaceRead ? <Users className="h-4 w-4" /> : <LockKeyhole className="h-4 w-4" />}
+          {workspaceRead ? "Shared read-only" : "Private"}
+        </button>
+      </div>
       <div className="mb-5 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
-        <div className="flex gap-3"><Shield className="h-5 w-5 shrink-0" /><div><p className="font-semibold">Management and memory are independent</p><p className="mt-1">A manager can rename this agent and administer its access list without reading or writing memory. Content roles are always explicit.</p></div></div>
+        <div className="flex gap-3"><Shield className="h-5 w-5 shrink-0" /><div><p className="font-semibold">Management and memory are independent</p><p className="mt-1">A manager does not receive content access automatically. Individual roles are explicit; workspace-wide access, when enabled above, is read-only.</p></div></div>
       </div>
       <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-800">
         <table className="w-full min-w-[780px] text-left text-sm">
@@ -1427,11 +1644,12 @@ function AccessPanel({ members, currentPrincipalId, currentWorkspaceRole, allowA
                   </td>
                   <td className="px-4 py-3">
                     <select className={INPUT} value={member.content_role ?? ""} disabled={busy === `content-${member.principal_id}`} onChange={(event) => onRole(member, (event.target.value || null) as ContentRole | null)}>
-                      <option value="">No content access</option>
+                      <option value="">{workspaceRead ? "Workspace reader (inherited)" : "No content access"}</option>
                       <option value="reader" disabled={self && !canChooseSelfRole}>Reader</option>
                       <option value="editor" disabled={self && !canChooseSelfRole}>Editor</option>
                       <option value="full_access" disabled={self && !canChooseSelfRole}>Full access</option>
                     </select>
+                    {!member.content_role && member.effective_content_role === "reader" && <p className="mt-1 text-xs text-blue-700 dark:text-blue-300">Inherited from workspace access</p>}
                     {self && !canChooseSelfRole && <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Self-grant is disabled. You may still revoke existing access.</p>}
                   </td>
                   <td className="px-4 py-3 text-right">
@@ -1471,7 +1689,7 @@ function MembersPanel({ members, invitations, currentPrincipalId, owner, inviteE
     <div className="space-y-6 p-5">
       <div>
         <h3 className="font-semibold">Add a workspace member</h3>
-        <p className="mt-1 text-sm text-gray-500">Membership reveals agent names to workspace administrators. It does not grant memory access.</p>
+        <p className="mt-1 text-sm text-gray-500">Membership does not grant private memory access. Members can read only stores that are explicitly shared workspace-wide or granted to them individually.</p>
         <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_140px_auto]">
           <input className={INPUT} type="email" value={inviteEmail} onChange={(event) => onInviteEmail(event.target.value)} placeholder="person@example.com" />
           <select className={INPUT} value={inviteRole} onChange={(event) => onInviteRole(event.target.value as "admin" | "member")}><option value="member">Member</option>{owner && <option value="admin">Administrator</option>}</select>

@@ -34,6 +34,7 @@ from .management_store import (
     content_role_name,
 )
 from .namespace_store import (
+    AgentAccessPolicy,
     NamespaceStore,
     WorkspaceAdmissionPolicy,
     WorkspaceAgentCreationPolicy,
@@ -139,6 +140,12 @@ class SetContentAccessRequest(PrincipalTargetRequest):
     confirm_self_grant: bool = False
 
 
+class SetAgentAccessPolicyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    access_policy: Literal["private", "workspace_read"]
+    confirm_self_grant: bool = False
+
+
 class SetManagerRequest(PrincipalTargetRequest):
     enabled: bool
 
@@ -190,6 +197,10 @@ def _agent_payload(item) -> dict[str, object]:
         "slug": item.slug,
         "display_alias": item.display_alias,
         "content_role": content_role_name(item.content_role),
+        "explicit_content_role": content_role_name(
+            item.explicit_content_role
+        ),
+        "access_policy": item.access_policy.value,
         "can_manage": item.can_manage,
         "created_at": item.created_at.isoformat(),
     }
@@ -219,6 +230,9 @@ def _member_payload(item) -> dict[str, object]:
         "display_name": item.display_name,
         "workspace_role": item.workspace_role.value,
         "content_role": content_role_name(item.content_role),
+        "effective_content_role": content_role_name(
+            item.effective_content_role
+        ),
         "explicit_manager": item.explicit_manager,
     }
 
@@ -399,6 +413,7 @@ def create_management_api(
             "workspace_admins_list_all_agents": True,
             "management_implies_content_access": False,
             "content_roles": ["reader", "editor", "full_access"],
+            "agent_access_policies": ["private", "workspace_read"],
             "workspace_admission_policies": [
                 "invite_only",
                 "all_authenticated",
@@ -521,6 +536,25 @@ def create_management_api(
             workspace_slug=workspace_slug,
             agent_slug=agent_slug,
             display_alias=body.display_alias,
+        )
+        return _agent_payload(item)
+
+    @app.put(
+        "/workspaces/{workspace_slug}/agents/{agent_slug}/access-policy"
+    )
+    async def set_agent_access_policy(
+        workspace_slug: str,
+        agent_slug: str,
+        body: SetAgentAccessPolicyRequest,
+        principal: ManagementPrincipal = Depends(current_principal),
+    ):
+        item = await management_store.set_agent_access_policy(
+            principal_id=principal.principal_id,
+            workspace_slug=workspace_slug,
+            agent_slug=agent_slug,
+            access_policy=AgentAccessPolicy(body.access_policy),
+            allow_admin_self_grant=allow_admin_self_grant,
+            self_grant_confirmed=body.confirm_self_grant,
         )
         return _agent_payload(item)
 

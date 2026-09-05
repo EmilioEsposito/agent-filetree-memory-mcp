@@ -158,6 +158,7 @@ def test_packaged_revision_upgrades_and_downgrades_from_host_alembic(tmp_path):
         names = asyncio.run(table_names())
         assert names == {
             "_afm_control_plane_installation",
+            "agent_access_policies",
             "agent_grants",
             "agent_managers",
             "agent_profiles",
@@ -347,7 +348,7 @@ def test_policy_migration_does_not_backfill_existing_agents_or_permissions(
             )
         await engine.dispose()
 
-    async def counts() -> tuple[int, int]:
+    async def counts() -> tuple[int, int, int]:
         engine = create_async_engine(url)
         async with engine.connect() as connection:
             policy_count = (
@@ -360,8 +361,16 @@ def test_policy_migration_does_not_backfill_existing_agents_or_permissions(
                     text(f'SELECT count(*) FROM "{schema}".agent_managers')
                 )
             ).scalar_one()
+            access_policy_count = (
+                await connection.execute(
+                    text(
+                        f'SELECT count(*) FROM "{schema}".'
+                        '"agent_access_policies"'
+                    )
+                )
+            ).scalar_one()
         await engine.dispose()
-        return policy_count, manager_count
+        return policy_count, manager_count, access_policy_count
 
     async def cleanup() -> None:
         engine = create_async_engine(url)
@@ -375,6 +384,6 @@ def test_policy_migration_does_not_backfill_existing_agents_or_permissions(
         command.upgrade(config, "afm_0003")
         asyncio.run(seed_pre_policy_agent())
         command.upgrade(config, "agent_filetree_memory@head")
-        assert asyncio.run(counts()) == (0, 0)
+        assert asyncio.run(counts()) == (0, 0, 0)
     finally:
         asyncio.run(cleanup())

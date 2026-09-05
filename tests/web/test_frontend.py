@@ -96,3 +96,24 @@ def test_bundled_distribution_is_real_not_a_placeholder() -> None:
     assets = list((dist / "assets").glob("*.js"))
     assert "<div id=\"root\"></div>" in html
     assert assets and all(item.stat().st_size > 10_000 for item in assets)
+
+
+def test_bundled_frontend_has_view_first_memory_controls() -> None:
+    dist = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "agent_filetree_memory"
+        / "web"
+        / "dist"
+    )
+    javascript = "\n".join(
+        path.read_text(encoding="utf-8") for path in (dist / "assets").glob("*.js")
+    )
+
+    assert "Add file" in javascript
+    assert "Folder (opt.)" in javascript
+    assert "filename.md" in javascript
+    assert "Create file" in javascript
+    assert "Delete file" in javascript
+    assert "It will become unreadable immediately" in javascript
+    assert "This file is empty." in javascript

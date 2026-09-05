@@ -74,6 +74,11 @@ _INTEGRITY_RECORD_FIELDS = {
         "display_alias",
         "created_by_principal_id",
     ),
+    "agent_access_policy": (
+        "workspace_id",
+        "agent_profile_id",
+        "access_policy",
+    ),
     "agent_grant": (
         "workspace_id",
         "agent_profile_id",
@@ -107,6 +112,7 @@ _INTEGRITY_RECORD_DOMAINS = {
     "workspace_member": "workspace-member/v1",
     "workspace_policy": "workspace-policy/v1",
     "agent_profile": "agent-profile/v1",
+    "agent_access_policy": "agent-access-policy/v1",
     "agent_grant": "agent-grant/v1",
     "workspace_invitation": "workspace-invitation/v1",
     "agent_manager": "agent-manager/v1",
@@ -137,6 +143,11 @@ class AgentGrantRole(StrEnum):
     READER = "reader"
     EDITOR = "editor"
     ADMIN = "admin"
+
+
+class AgentAccessPolicy(StrEnum):
+    PRIVATE = "private"
+    WORKSPACE_READ = "workspace_read"
 
 
 _READER_ACTIONS = frozenset(
@@ -327,6 +338,54 @@ agent_profiles = Table(
     CheckConstraint(
         "octet_length(integrity_tag) = 32",
         name="ck_afm_agent_profiles_integrity_tag_length",
+    ),
+    schema=DEFAULT_SCHEMA,
+)
+
+agent_access_policies = Table(
+    "agent_access_policies",
+    namespace_metadata,
+    Column("workspace_id", String(32), nullable=False),
+    Column("agent_profile_id", String(32), nullable=False),
+    Column("access_policy", String(32), nullable=False),
+    Column("integrity_version", SmallInteger, nullable=False),
+    Column("integrity_tag", LargeBinary(32), nullable=False),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    PrimaryKeyConstraint(
+        "agent_profile_id",
+        name="pk_afm_agent_access_policies",
+    ),
+    ForeignKeyConstraint(
+        ["workspace_id", "agent_profile_id"],
+        [
+            f"{DEFAULT_SCHEMA}.agent_profiles.workspace_id",
+            f"{DEFAULT_SCHEMA}.agent_profiles.agent_profile_id",
+        ],
+        ondelete="CASCADE",
+        name="fk_afm_agent_access_policies_profile",
+    ),
+    CheckConstraint(
+        "access_policy IN ('private', 'workspace_read')",
+        name="ck_afm_agent_access_policies_access_policy",
+    ),
+    CheckConstraint(
+        "integrity_version = 1",
+        name="ck_afm_agent_access_policies_integrity_version",
+    ),
+    CheckConstraint(
+        "octet_length(integrity_tag) = 32",
+        name="ck_afm_agent_access_policies_integrity_tag_length",
     ),
     schema=DEFAULT_SCHEMA,
 )
@@ -554,6 +613,7 @@ class NamespaceTables:
     workspace_members: Table
     workspace_policies: Table
     agent_profiles: Table
+    agent_access_policies: Table
     agent_grants: Table
     principal_profiles: Table
     workspace_invitations: Table
@@ -567,6 +627,7 @@ _DEFAULT_TABLES = NamespaceTables(
     workspace_members=workspace_members,
     workspace_policies=workspace_policies,
     agent_profiles=agent_profiles,
+    agent_access_policies=agent_access_policies,
     agent_grants=agent_grants,
     principal_profiles=principal_profiles,
     workspace_invitations=workspace_invitations,
@@ -620,6 +681,9 @@ def namespace_tables_for_schema(
         workspace_members=metadata.tables[f"{schema}.workspace_members"],
         workspace_policies=metadata.tables[f"{schema}.workspace_policies"],
         agent_profiles=metadata.tables[f"{schema}.agent_profiles"],
+        agent_access_policies=metadata.tables[
+            f"{schema}.agent_access_policies"
+        ],
         agent_grants=metadata.tables[f"{schema}.agent_grants"],
         principal_profiles=metadata.tables[f"{schema}.principal_profiles"],
         workspace_invitations=metadata.tables[
@@ -917,6 +981,39 @@ class NamespaceStore:
         except (TypeError, ValueError):
             raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
 
+    async def _agent_access_policy(
+        self,
+        session: Any,
+        *,
+        workspace_id: str,
+        agent_profile_id: str,
+    ) -> AgentAccessPolicy:
+        row = (
+            await session.execute(
+                select(self._tables.agent_access_policies).where(
+                    self._tables.agent_access_policies.c.workspace_id
+                    == workspace_id,
+                    self._tables.agent_access_policies.c.agent_profile_id
+                    == agent_profile_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            # Existing installations predate per-agent access policies.
+            # Absence must remain private until a manager explicitly shares it.
+            return AgentAccessPolicy.PRIVATE
+        self._verify(
+            row,
+            "agent_access_policy",
+            workspace_id=row.workspace_id,
+            agent_profile_id=row.agent_profile_id,
+            access_policy=row.access_policy,
+        )
+        try:
+            return AgentAccessPolicy(row.access_policy)
+        except (TypeError, ValueError):
+            raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
+
     async def _audit(
         self,
         session: Any,
@@ -1084,6 +1181,16 @@ class NamespaceStore:
             if created_agent_id is not None:
                 agent_profile_id = created_agent_id
                 stored_display_alias = requested_display_alias
+                await session.execute(
+                    self._tables.agent_access_policies.insert().values(
+                        **self._signed(
+                            "agent_access_policy",
+                            workspace_id=workspace_id,
+                            agent_profile_id=agent_profile_id,
+                            access_policy=AgentAccessPolicy.PRIVATE.value,
+                        )
+                    )
+                )
                 agent_role = AgentGrantRole.ADMIN
                 grant_values = {
                     "workspace_id": workspace_id,
@@ -1229,24 +1336,32 @@ class NamespaceStore:
                     )
                 ).one_or_none()
                 if grant_row is None:
-                    raise AuthorizationDenied(_AUTHORIZATION_DENIED)
-                _require_record_integrity(
-                    integrity_key=self._integrity_key,
-                    integrity_service_namespace=self._integrity_service_namespace,
-                    record_type="agent_grant",
-                    integrity_version=grant_row.integrity_version,
-                    integrity_tag=grant_row.integrity_tag,
-                    fields={
-                        "workspace_id": workspace_id,
-                        "agent_profile_id": agent_profile_id,
-                        "principal_id": principal_id,
-                        "role": grant_row.role,
-                    },
-                )
-                try:
-                    agent_role = AgentGrantRole(grant_row.role)
-                except (TypeError, ValueError):
-                    raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
+                    access_policy = await self._agent_access_policy(
+                        session,
+                        workspace_id=workspace_id,
+                        agent_profile_id=agent_profile_id,
+                    )
+                    if access_policy is not AgentAccessPolicy.WORKSPACE_READ:
+                        raise AuthorizationDenied(_AUTHORIZATION_DENIED)
+                    agent_role = AgentGrantRole.READER
+                else:
+                    _require_record_integrity(
+                        integrity_key=self._integrity_key,
+                        integrity_service_namespace=self._integrity_service_namespace,
+                        record_type="agent_grant",
+                        integrity_version=grant_row.integrity_version,
+                        integrity_tag=grant_row.integrity_tag,
+                        fields={
+                            "workspace_id": workspace_id,
+                            "agent_profile_id": agent_profile_id,
+                            "principal_id": principal_id,
+                            "role": grant_row.role,
+                        },
+                    )
+                    try:
+                        agent_role = AgentGrantRole(grant_row.role)
+                    except (TypeError, ValueError):
+                        raise AuthorizationDenied(_AUTHORIZATION_DENIED) from None
 
             _require_action(agent_role, action)
             return NamespaceBinding(
@@ -1260,6 +1375,7 @@ class NamespaceStore:
 
 
 __all__ = [
+    "AgentAccessPolicy",
     "AgentGrantRole",
     "NamespaceBinding",
     "NamespaceStore",
@@ -1268,6 +1384,7 @@ __all__ = [
     "WorkspaceRole",
     "WorkspaceAdmissionPolicy",
     "WorkspaceAgentCreationPolicy",
+    "agent_access_policies",
     "agent_managers",
     "agent_grants",
     "agent_profiles",

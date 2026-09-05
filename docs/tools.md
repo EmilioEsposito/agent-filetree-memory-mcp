@@ -1,4 +1,4 @@
-# Agent tool contract (0.5)
+# Agent tool contract (0.6)
 
 These tools act on the current capability's encrypted virtual tree, rooted at
 `/`. They do not expose the host filesystem, execute a shell, or accept workspace
@@ -84,9 +84,9 @@ the authorized invocation and never exports plaintext files or builds a plaintex
 index. Narrow searches cost fewer reads and consume less of the existing scope
 rate limit. History operations retain their existing bounded retention semantics.
 
-## Upgrading from 0.4
+## Upgrading from 0.4–0.5
 
-Version 0.5 is an alpha minor release with a deliberate contract change:
+Version 0.6 is an alpha minor release with a deliberate contract change:
 `memory_read` and `memory_list` are now paged by default. Existing names and
 mutation parameter names remain; callers must handle continuation. MCP App UI
 helpers keep their full-document payloads and are still hidden from models.

@@ -17,7 +17,7 @@ The project is designed around four boundaries:
 The headless tools support directory browsing, recursive filename and content
 search, paged reads, exact-text edits, history, writes, appends, and deletion.
 See the [tool contract](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/docs/tools.md) for parameters, limits, examples, and the
-0.5 upgrade notes. History metadata and historical content
+0.6 upgrade notes. History metadata and historical content
 use separate capabilities. Writes use compare-and-swap versions and
 idempotency keys. Delete denies access immediately and makes encrypted data
 eligible for hard deletion after its configured retention window. The host must
@@ -61,7 +61,7 @@ for database setup, security-sensitive configuration, and server startup.
 - `agent_filetree_memory.application`: authorization-first memory operations.
 - `agent_filetree_memory.crypto`: envelope encryption and pluggable data-key providers.
 - `agent_filetree_memory.postgres`: PostgreSQL persistence and packaged Alembic migrations.
-- `agent_filetree_memory.control_plane`: optional workspaces, durable agent profiles, membership, independent management/content grants, and audit.
+- `agent_filetree_memory.control_plane`: optional workspaces, durable agent profiles, membership, private-by-default workspace-read policies, independent management/content grants, and audit.
 - `agent_filetree_memory.mcp`: headless MCP tools.
 - `agent_filetree_memory.mcp_app`: an optional current-capability browser and editor.
 - `agent_filetree_memory.web`: the version-matched management API composition and bundled React UI.
@@ -109,7 +109,9 @@ principals, including a platform-administrator boolean, and may inject an
 external workspace-entitlement resolver. Platform administrators can inventory
 workspace metadata and create workspaces, but must explicitly take a workspace
 role before agent slugs become visible. Workspace administration and explicit
-agent management never imply content access or decryption.
+agent management never imply content access or decryption. An agent may be
+explicitly shared read-only with its workspace; individual grants still control
+editing and deletion.
 
 ## License
 

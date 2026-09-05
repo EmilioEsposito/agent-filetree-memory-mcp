@@ -41,6 +41,7 @@ from prefab_ui.components import (
     If,
     Input,
     Loader,
+    Markdown,
     Muted,
     Row,
     Separator,
@@ -202,6 +203,7 @@ def _browser_listing(path: str, entries: Any) -> dict[str, Any]:
     return {
         "path": normalized,
         "parent_path": _parent_path(normalized),
+        "folder_input": normalized.strip("/"),
         "directories": [
             entry for entry in serialized if entry["kind"] == "directory"
         ],
@@ -322,6 +324,10 @@ def _load_directory_actions(
                 SetState("append_content", ""),
                 SetState("current_version", None),
                 SetState("mutation", {}),
+                SetState("editing", False),
+                SetState("new_file_open", False),
+                SetState("new_folder", ""),
+                SetState("new_filename", ""),
                 SetState("loading", False),
             ],
             on_error=[
@@ -351,6 +357,8 @@ def _open_document_actions(
                 SetState("append_content", ""),
                 SetState("current_version", RESULT.version),
                 SetState("mutation", {}),
+                SetState("editing", False),
+                SetState("new_file_open", False),
                 SetState("loading", False),
             ],
             on_error=[
@@ -377,6 +385,7 @@ def _apply_mutation_actions() -> list[Any]:
         SetState("append_content", RESULT.append_content),
         SetState("current_version", RESULT.current_version),
         SetState("idempotency_key", RESULT.next_idempotency_key),
+        SetState("load_error", ""),
         SetState("saving", False),
     ]
 
@@ -752,9 +761,14 @@ def create_memory_browser_app(
         app_instance_id = _issue_app_instance(invocation, signing_key)
         has_version = STATE.current_version != None  # noqa: E711
         is_new_document = STATE.current_version == None  # noqa: E711
+        is_editing = STATE.editing == True  # noqa: E712
         has_conflict_content = (
             STATE.mutation.selected.content != None  # noqa: E711
         )
+        optional_folder_prefix = (STATE.new_folder == "").then(
+            "", STATE.new_folder + "/"
+        )
+        new_document_path = "/" + optional_folder_prefix + STATE.new_filename
         delete_arguments = {
             "app_instance_id": app_instance_id,
             "path": STATE.draft_path,
@@ -763,6 +777,7 @@ def create_memory_browser_app(
         }
         delete_success_actions = [
             *_apply_mutation_actions(),
+            SetState("editing", False),
             CloseOverlay(),
         ]
         delete_error = (
@@ -792,7 +807,7 @@ def create_memory_browser_app(
                     AlertTitle("Memory unavailable")
                     AlertDescription("{{ load_error }}")
 
-            with Grid(columns=[1, 2], gap=4):
+            with Grid(columns={"default": 1, "lg": 2}, gap=4):
                 with Card():
                     with CardHeader():
                         with Row(gap=2, align="center", justify="between"):
@@ -824,24 +839,78 @@ def create_memory_browser_app(
                                         app_instance_id,
                                     ),
                                 )
+
+                            with If(~STATE.new_file_open):
                                 Button(
-                                    "New file",
+                                    "Add file",
                                     icon="file-plus",
+                                    variant="outline",
                                     size="sm",
+                                    css_class="w-full",
                                     on_click=[
-                                        SetState("selected", {}),
+                                        SetState("new_file_open", True),
                                         SetState(
-                                            "draft_path",
-                                            (STATE.listing.path == "/").then(
-                                                "/", STATE.listing.path + "/"
-                                            ),
+                                            "new_folder",
+                                            STATE.listing.folder_input,
                                         ),
-                                        SetState("draft_content", ""),
-                                        SetState("append_content", ""),
-                                        SetState("current_version", None),
-                                        SetState("mutation", {}),
+                                        SetState("new_filename", ""),
                                     ],
                                 )
+
+                            with If(STATE.new_file_open):
+                                with Column(gap=2, css_class="rounded-md bg-muted/40 p-2"):
+                                    with Grid(columns=2, gap=2):
+                                        Input(
+                                            name="new_folder",
+                                            value=STATE.new_folder,
+                                            placeholder="Folder (opt.)",
+                                            on_change=SetState(
+                                                "new_folder", Rx("$event")
+                                            ),
+                                        )
+                                        Input(
+                                            name="new_filename",
+                                            value=STATE.new_filename,
+                                            placeholder="filename.md",
+                                            on_change=SetState(
+                                                "new_filename", Rx("$event")
+                                            ),
+                                        )
+                                    Muted(
+                                        "Folder path is from root. Leave it blank "
+                                        "to add the file at root."
+                                    )
+                                    with Row(gap=2, justify="end"):
+                                        Button(
+                                            "Cancel",
+                                            variant="outline",
+                                            size="sm",
+                                            on_click=[
+                                                SetState("new_file_open", False),
+                                                SetState("new_folder", ""),
+                                                SetState("new_filename", ""),
+                                            ],
+                                        )
+                                        Button(
+                                            "Continue",
+                                            icon="arrow-right",
+                                            size="sm",
+                                            disabled=STATE.new_filename == "",
+                                            on_click=[
+                                                SetState("selected", {}),
+                                                SetState(
+                                                    "draft_path", new_document_path
+                                                ),
+                                                SetState("draft_content", ""),
+                                                SetState("append_content", ""),
+                                                SetState("current_version", None),
+                                                SetState("mutation", {}),
+                                                SetState("editing", True),
+                                                SetState("new_file_open", False),
+                                                SetState("new_folder", ""),
+                                                SetState("new_filename", ""),
+                                            ],
+                                        )
 
                             with If(STATE.loading):
                                 with Row(gap=2, align="center"):
@@ -884,7 +953,7 @@ def create_memory_browser_app(
                 with Card():
                     with CardHeader():
                         with Row(gap=2, align="center", justify="between"):
-                            CardTitle("Markdown editor")
+                            CardTitle("Memory document")
                             with If(has_version):
                                 Badge(
                                     "Version {{ current_version }}",
@@ -898,77 +967,117 @@ def create_memory_browser_app(
                                 )
 
                             with If(STATE.draft_path != ""):
-                                with Field():
-                                    with FieldContent():
-                                        FieldTitle("Path")
-                                        FieldDescription(
-                                            "Use a virtual Markdown path such as "
-                                            "/decisions/api.md."
+                                with Row(gap=2, align="center", justify="between"):
+                                    Text("{{ draft_path }}", code=True)
+                                    with If(has_version & (~is_editing)):
+                                        Button(
+                                            "Edit",
+                                            icon="pencil",
+                                            variant="outline",
+                                            size="sm",
+                                            on_click=[
+                                                SetState("editing", True),
+                                                SetState("mutation", {}),
+                                                SetState("load_error", ""),
+                                            ],
                                         )
-                                    with If(is_new_document):
-                                        Input(
-                                            name="memory_path",
-                                            value=STATE.draft_path,
+
+                                with If(~is_editing):
+                                    with If(STATE.selected.content != ""):
+                                        Markdown(
+                                            "{{ selected.content }}",
+                                            css_class="min-h-64",
+                                        )
+                                    with If(STATE.selected.content == ""):
+                                        Muted("This file is empty.")
+
+                                with If(is_editing):
+                                    with Field():
+                                        with FieldContent():
+                                            FieldTitle("Markdown")
+                                            FieldDescription(
+                                                "Save uses create-only or exact-version "
+                                                "compare-and-swap."
+                                            )
+                                        Textarea(
+                                            name="memory_content",
+                                            value=STATE.draft_content,
+                                            rows=16,
+                                            placeholder="# Memory\n",
                                             on_change=SetState(
-                                                "draft_path", Rx("$event")
+                                                "draft_content", Rx("$event")
                                             ),
                                         )
-                                    with If(has_version):
-                                        Text("{{ draft_path }}", code=True)
-
-                                with Field():
-                                    with FieldContent():
-                                        FieldTitle("Document")
-                                        FieldDescription(
-                                            "Save uses create-only or exact-version "
-                                            "compare-and-swap."
-                                        )
-                                    Textarea(
-                                        name="memory_content",
-                                        value=STATE.draft_content,
-                                        rows=16,
-                                        placeholder="# Memory\n",
-                                        on_change=SetState(
-                                            "draft_content", Rx("$event")
-                                        ),
-                                    )
-
-                                Button(
-                                    "Save document",
-                                    icon="save",
-                                    disabled=STATE.saving,
-                                    on_click=[
-                                        SetState("saving", True),
-                                        SetState("mutation", {}),
-                                        CallTool(
-                                            ui_memory_save,
-                                            arguments={
-                                                "app_instance_id": app_instance_id,
-                                                "path": STATE.draft_path,
-                                                "content": STATE.draft_content,
-                                                "expected_version": (
-                                                    STATE.current_version
-                                                ),
-                                                "idempotency_key": (
-                                                    STATE.idempotency_key
-                                                ),
-                                            },
-                                            on_success=_apply_mutation_actions(),
-                                            on_error=[
-                                                SetState("saving", False),
-                                                SetState(
-                                                    "load_error",
-                                                    (
-                                                        "The save failed without "
-                                                        "changing the open draft."
+                                    with Row(gap=2, justify="end"):
+                                        with If(is_new_document):
+                                            Button(
+                                                "Cancel",
+                                                variant="outline",
+                                                on_click=[
+                                                    SetState("draft_path", ""),
+                                                    SetState("draft_content", ""),
+                                                    SetState("editing", False),
+                                                    SetState("mutation", {}),
+                                                ],
+                                            )
+                                        with If(has_version):
+                                            Button(
+                                                "Cancel",
+                                                variant="outline",
+                                                on_click=[
+                                                    SetState(
+                                                        "draft_content",
+                                                        STATE.selected.content,
                                                     ),
+                                                    SetState("editing", False),
+                                                    SetState("mutation", {}),
+                                                ],
+                                            )
+                                        Button(
+                                            is_new_document.then(
+                                                "Create file", "Save"
+                                            ),
+                                            icon="save",
+                                            disabled=STATE.saving,
+                                            on_click=[
+                                                SetState("saving", True),
+                                                SetState("mutation", {}),
+                                                SetState("load_error", ""),
+                                                CallTool(
+                                                    ui_memory_save,
+                                                    arguments={
+                                                        "app_instance_id": app_instance_id,
+                                                        "path": STATE.draft_path,
+                                                        "content": STATE.draft_content,
+                                                        "expected_version": (
+                                                            STATE.current_version
+                                                        ),
+                                                        "idempotency_key": (
+                                                            STATE.idempotency_key
+                                                        ),
+                                                    },
+                                                    on_success=[
+                                                        *_apply_mutation_actions(),
+                                                        SetState(
+                                                            "editing",
+                                                            RESULT.ok != True,  # noqa: E712
+                                                        ),
+                                                    ],
+                                                    on_error=[
+                                                        SetState("saving", False),
+                                                        SetState(
+                                                            "load_error",
+                                                            (
+                                                                "The save failed without "
+                                                                "changing the open draft."
+                                                            ),
+                                                        ),
+                                                    ],
                                                 ),
                                             ],
-                                        ),
-                                    ],
-                                )
+                                        )
 
-                                with If(has_version):
+                                with If(has_version & (~is_editing)):
                                     Separator()
                                     with Field():
                                         with FieldContent():
@@ -1119,6 +1228,7 @@ def create_memory_browser_app(
                 "listing": {
                     "path": "/",
                     "parent_path": "/",
+                    "folder_input": "",
                     "directories": [],
                     "documents": [],
                 },
@@ -1127,6 +1237,10 @@ def create_memory_browser_app(
                 "draft_content": "",
                 "append_content": "",
                 "current_version": None,
+                "editing": False,
+                "new_file_open": False,
+                "new_folder": "",
+                "new_filename": "",
                 "idempotency_key": _next_key(),
                 "mutation": {},
                 "loading": True,
