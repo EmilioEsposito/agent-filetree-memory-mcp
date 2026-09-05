@@ -75,7 +75,7 @@ IdempotencyKey = Annotated[
             "minLength": 1,
             "maxLength": 255,
             "pattern": r"^[A-Za-z0-9][A-Za-z0-9._~:-]{0,254}$",
-            "description": "Unique request label, e.g. edit-1; no spaces. Reuse only for identical retries, including the original version.",
+            "description": "Choose a unique request label (e.g. edit-1): letters, digits, dots, underscores, tildes, colons, hyphens; no spaces. Reuse only for the identical retry.",
         }
     ),
 ]
@@ -216,7 +216,7 @@ StartColumn = _parameter(
 )
 GlobPattern = _parameter(
     {"type": "string", "minLength": 1, "maxLength": 1024},
-    "Relative glob: * never crosses /; ** spans directories, e.g. **/*plan*.md. Supports ?, []; no braces or leading slash.",
+    "Relative path glob: * never crosses /; ** spans directories. Example: **/*plan*.md or projects/*/notes.md. Supports ?, []; no leading slash or brace expansion.",
 )
 SearchPattern = _parameter(
     {"type": "string", "minLength": 1, "maxLength": 1024},
@@ -546,10 +546,11 @@ def create_mcp_server(
         limit: ResultLimit = 100,
         offset: ResultOffset = 0,
     ) -> DirectoryPayload:
-        """List one virtual directory's immediate children and current versions.
+        """List one directory's immediate children (paths, kinds, current versions).
 
-        Follow next_offset to page. Use memory_glob for recursive filenames or
-        memory_grep for content search."""
+        Start at / to browse. For recursive filename discovery use memory_glob;
+        for words inside documents use memory_grep. Follow next_offset to page.
+        Paths are virtual memory paths, unrelated to the host filesystem."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.LIST
         )
@@ -581,11 +582,13 @@ def create_mcp_server(
         max_lines: MaxLines = 200,
         start_column: StartColumn = 1,
     ) -> ReadPayload:
-        """Read exact current text and version; defaults to 200 lines, capped at 20,000 characters.
+        """Read current Markdown and its version, up to 200 lines/20,000 characters by default.
 
-        Follow both next_start_line and next_start_column while truncated=true.
-        Content has no added line numbers. Use its version for edits; never use
-        a partial read for whole-document replacement. For small changes use memory_edit."""
+        start_line is 1-based. Follow next_start_line AND next_start_column while
+        truncated is true; a long line may span pages. content is exact text without
+        added line numbers. Use the returned version as expected_version for edits.
+        Never replace a whole document with a partial read. For a small change use
+        memory_edit; for retained old content use memory_history_read."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.READ
         )
@@ -608,11 +611,14 @@ def create_mcp_server(
         limit: ResultLimit = 100,
         offset: ResultOffset = 0,
     ) -> GlobPayload:
-        """Find document paths by case-sensitive glob, without reading content.
+        """Find document paths recursively by filename pattern, without reading their content.
 
-        path is a directory; pattern is relative to it. **/*.md includes root files.
-        Follow next_offset to page. On scan_limit, narrow path/pattern; incomplete
-        empty results do not prove absence. Use memory_grep for content."""
+        Patterns are relative to path: **/*.md matches every Markdown document;
+        projects/*/decision.md matches one directory level. Supports *, ?, [],
+        and ** segments; no brace expansion. Case-sensitive, deterministic traversal.
+        Use memory_grep to search contents. Follow next_offset for result pages;
+        if limit_reasons contains scan_limit, narrow path/pattern. An incomplete
+        scan with zero results does not prove that no matching file exists."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.LIST
         )
@@ -633,12 +639,17 @@ def create_mcp_server(
         limit: ResultLimit = 50,
         offset: ResultOffset = 0,
     ) -> GrepPayload:
-        """Search current content under a file or directory; requires list + read.
+        """Search current document contents recursively; return matching lines and versions.
 
-        Defaults to literal, case-sensitive search. Regex is single-line and
-        time-limited. Returns versions and 1-based locations; snippets may be
-        clipped. Read exact text before editing. Follow next_offset to page;
-        on scan_limit, narrow path/glob. Incomplete empty results do not prove absence."""
+        Literal, case-sensitive search by default: punctuation needs no escaping.
+        Set literal=false for Python-compatible regex (single-line, time-limited).
+        path is a file or directory; glob filters relative document paths (e.g. **/notes.md).
+        content mode returns 1-based line numbers, bounded snippets and context;
+        files_with_matches returns each matching path once without content.
+        Read a match with memory_read before editing. Snippets may be clipped;
+        start_column locates them. Follow next_offset for result pages. If
+        limit_reasons contains scan_limit, narrow path/glob; zero partial results
+        are not proof of absence. Requires both list and read capabilities."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.READ
         )
@@ -668,12 +679,16 @@ def create_mcp_server(
         co_authored_by: CoAuthorClaims = (),
         change_comment: ChangeComment = None,
     ) -> WritePayload:
-        """Replace exact text atomically, preserving the rest; requires read + write.
+        """Replace exact text in one document atomically, preserving everything else.
 
-        Read first. Copy old_text including whitespace; add context if ambiguous.
-        It must match once unless replace_all=true. Empty new_text deletes the
-        match. Missing/ambiguous matches change nothing. No regex or fuzzy matching.
-        On version conflict, re-read and use a new key for the revised edit."""
+        Read first; copy old_text exactly, including whitespace and newlines.
+        By default it must occur exactly once: include surrounding text to make
+        it unique. replace_all=true replaces every non-overlapping occurrence.
+        new_text="" removes the matched text. No regex, fuzzy matching, or implicit
+        newline insertion. Missing/ambiguous matches make no changes. Requires
+        read and write capabilities. On version conflict, re-read and use a new
+        idempotency_key for the revised edit. Reuse the key only for an identical
+        retry, including the original expected_version."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.WRITE
         )
@@ -705,8 +720,7 @@ def create_mcp_server(
         """List retained timestamps, attribution, and comments without Markdown.
 
         Change comments are caller-supplied free text and may themselves be
-        sensitive even though document content is not returned.
-        """
+        sensitive even though document content is not returned."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.HISTORY_LIST
         )
@@ -759,8 +773,7 @@ def create_mcp_server(
 
         Omit ``expected_version`` only for a new path. To replace a document,
         pass the exact version returned by ``memory_read``. Reuse an
-        ``idempotency_key`` only for an identical retry.
-        """
+        ``idempotency_key`` only for an identical retry."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.WRITE
         )
@@ -789,10 +802,12 @@ def create_mcp_server(
         co_authored_by: CoAuthorClaims = (),
         change_comment: ChangeComment = None,
     ) -> WritePayload:
-        """Append exact text to an existing document, using its current version.
+        """Add exact text at the end of an existing document.
 
-        No separator is inserted: include needed newlines in content. Retry with
-        the same key only for identical arguments. On conflict, re-read and use a new key."""
+        No newline or separator is inserted: include it in content when needed.
+        Read first for expected_version. Requires append capability. Retry an
+        identical request with the same key; after a version conflict, re-read
+        and use a new key for the reconciled request."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.APPEND
         )
@@ -818,10 +833,11 @@ def create_mcp_server(
         expected_version: ExpectedVersion,
         idempotency_key: IdempotencyKey,
     ) -> DeletePayload:
-        """Delete one document at its current version, denying access immediately.
+        """Delete one document at its current version; directories are not recursive deletes.
 
-        Directories are not recursively deleted. Encrypted versions become
-        eligible for later purge. Reuse a key only for an identical retry."""
+        Read first for expected_version. Access to content/history is denied
+        immediately; encrypted versions become eligible for later retention purge.
+        Retry only identical requests with the same idempotency_key."""
         invocation = await _verified_invocation(
             invocation_resolver, ctx, MemoryAction.DELETE
         )

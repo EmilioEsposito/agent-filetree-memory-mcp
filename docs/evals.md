@@ -104,3 +104,33 @@ We use one framework here to keep the contributor workflow small.
 The design follows the emphasis on verifiable outcomes, readable traces, and
 held-out tasks in Anthropic's [tool design guide](https://www.anthropic.com/engineering/writing-tools-for-agents)
 and [agent eval guide](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents).
+
+## Initial 0.6 development experiment
+
+On September 5, 2026, ten synthetic tasks ran three times per surface using
+`openai/gpt-5.4-nano`, pinned to OpenRouter's `openai` provider, low reasoning,
+4,096 output tokens per request, and the same fixture/grader revision.
+The [machine-readable summary](../evals/results/0.6.0.json) records hashes and
+per-case results. The previous seven-tool surface was unchanged through 0.5.1.
+
+| Metric | Previous surface | Selected 0.6 surface |
+| --- | ---: | ---: |
+| Successful trials | 26/30 | 30/30 |
+| Mean MCP calls | 4.53 | 3.53 |
+| Mean serialized result bytes | 7,342 | 1,914 |
+| Reported input tokens, total | 457,848 | 484,073 |
+| Reported output tokens, total | 42,283 | 7,303 |
+
+Three baseline failures required rewriting a 600-line document for a one-line
+change and exhausted the per-response output budget. One inserted an extra
+blank line beyond the requested append. The new edit tool avoided whole-document
+rewrites. The larger catalog still increased input tokens about 6%; smaller
+results do not automatically mean less prompt context. A shorter-description
+variant also passed 30/30 but consumed 515,016 input tokens, so the clearer
+descriptions were retained. Costs depend on input/output rates and caching.
+
+These are development observations on a small, repeatedly inspected dataset,
+including its validation partition during final tuning—not independent benchmark
+evidence. The initial append grader was corrected to accept an unspecified
+terminal newline; both surfaces were rerun with that same corrected grader.
+Use fresh tasks and more trials before claiming broader model performance gains.

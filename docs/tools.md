@@ -18,8 +18,9 @@ instructions.
 | `memory_history_list` | Retained version metadata, newest first | history:list |
 | `memory_history_read` | Retained historical text and optional unified diff | history:read |
 
-Capability names above have the `memory:` prefix. No new grants or database
-migrations are needed. The server asks the resolver for read when searching and
+Capability names above have the `memory:` prefix. The 0.6 tool changes add no
+grants or database migrations; continue applying package migrations when upgrading
+older releases. The server asks the resolver for read when searching and
 write when editing, then checks the additional capability on that same verified
 invocation before validating inputs or touching storage.
 
