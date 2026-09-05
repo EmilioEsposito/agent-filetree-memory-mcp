@@ -221,7 +221,7 @@ export default function AgentMemoryPage() {
 }
 
 function AgentMemoryManager() {
-  const { config, getToken } = useAuth();
+  const { config, getToken, logout } = useAuth();
   const [searchParams, setSearchParams] = useBrowserSearchParams();
   const [me, setMe] = useState<CurrentPrincipal | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -993,6 +993,12 @@ function AgentMemoryManager() {
                 {me.is_platform_admin && <RoleBadge tone="blue">Platform admin</RoleBadge>}
               </p>
               <p className="text-gray-500 dark:text-gray-400">{me.email}</p>
+              {config?.auth.mode === "oidc" && (
+                <button className="mt-2 text-blue-600 hover:underline dark:text-blue-400"
+                  onClick={() => void logout()}>
+                  Sign out
+                </button>
+              )}
             </div>
           )}
         </div>
