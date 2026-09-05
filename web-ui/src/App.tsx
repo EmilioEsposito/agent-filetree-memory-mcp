@@ -41,6 +41,7 @@ import {
   createAgent,
   createWorkspace,
   deleteMemoryDocument,
+  ensurePersonalWorkspace,
   inviteMember,
   joinWorkspace,
   loadAgentAccess,
@@ -79,6 +80,11 @@ import type {
   WorkspaceRole,
   WorkspaceSummary,
 } from "./types";
+
+function workspaceName(slug: string): string {
+  // Automatically provisioned names retain a unique URL slug, without personal data.
+  return /^personal-[a-f0-9]{32}$/.test(slug) ? "Personal" : slug;
+}
 
 const CONTAINER = "mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-8";
 
@@ -413,17 +419,27 @@ function AgentMemoryManager() {
       setLoading(true);
       setError("");
       try {
-        const [principal, nextWorkspaces] = await Promise.all([
+        let [principal, nextWorkspaces] = await Promise.all([
           loadMe(getToken),
           loadWorkspaces(getToken),
         ]);
         if (cancelled) return;
+        let personalSlug = "";
+        if (principal.auto_create_personal_workspace) {
+          const provisioned = await ensurePersonalWorkspace(getToken);
+          personalSlug = provisioned.workspace?.slug ?? "";
+          [principal, nextWorkspaces] = await Promise.all([
+            loadMe(getToken),
+            loadWorkspaces(getToken),
+          ]);
+          if (cancelled) return;
+        }
         setMe(principal);
         setWorkspaces(nextWorkspaces);
         const requested = searchParams.get("workspace");
         const chosen = nextWorkspaces.some((item) => item.slug === requested)
           ? requested!
-          : nextWorkspaces[0]?.slug ?? "";
+          : personalSlug || nextWorkspaces[0]?.slug || "";
         setSelectedWorkspaceSlug(chosen);
       } catch (caught) {
         if (!cancelled) fail(caught);
@@ -1095,7 +1111,8 @@ function AgentMemoryManager() {
                   }}
                   className={`mb-1 w-full rounded-lg px-3 py-2 text-left transition ${selectedWorkspaceSlug === workspace.slug ? "bg-blue-50 text-blue-800 dark:bg-blue-950/50 dark:text-blue-200" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
                 >
-                  <div className="truncate text-sm font-medium">{workspace.slug}</div>
+                  <div className="truncate text-sm font-medium">{workspaceName(workspace.slug)}</div>
+                  {workspaceName(workspace.slug) !== workspace.slug && <div className="truncate text-xs text-gray-500">{workspace.slug}</div>}
                   <div className="mt-1 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
                     <span>{workspace.agent_count} agents</span>
                     <span>{workspaceRoleLabel(workspace.role)}</span>
@@ -1231,7 +1248,7 @@ function AgentMemoryManager() {
             {tab === "members" && workspaceAdmin ? (
               <>
                 <div className="flex items-center justify-between gap-3 border-b border-gray-200 p-5 dark:border-gray-800">
-                  <h2 className="font-semibold">{selectedWorkspaceSlug} teammates</h2>
+                  <h2 className="font-semibold">{workspaceName(selectedWorkspaceSlug)} teammates</h2>
                   <button className={`${BUTTON} bg-gray-100 dark:bg-gray-800`} onClick={() => setTab("memory")}>Back to memory</button>
                 </div>
                 {workspaceMembersPanel}

@@ -14,6 +14,7 @@ export interface CurrentPrincipal {
   allow_admin_self_grant: boolean;
   is_platform_admin: boolean;
   can_create_workspaces?: boolean;
+  auto_create_personal_workspace?: boolean;
   workspace_creation_restriction?: "policy" | "quota" | null;
   created_workspace_count?: number;
   workspace_creation_limit?: number;

@@ -91,6 +91,7 @@ def test_management_api_uses_injected_identity_and_separate_policy() -> None:
         "display_name": "Example person",
         "is_platform_admin": False,
         "can_create_workspaces": False,
+        "auto_create_personal_workspace": False,
         "workspace_creation_restriction": "policy",
         "created_workspace_count": 0,
         "workspace_creation_limit": 10,
@@ -361,3 +362,39 @@ def test_invalid_creation_capability_fails_closed():
     )
     with TestClient(app) as client:
         assert client.get("/me").status_code == 403
+
+
+@pytest.mark.parametrize(
+    "automatic,allowed", [(False, True), (True, False), (True, True)]
+)
+def test_personal_workspace_bootstrap_requires_trusted_host_policy(automatic, allowed):
+    class Store(_ManagementStore):
+        async def ensure_personal_workspace(self, **kwargs):
+            assert kwargs["can_create_workspaces"] is allowed
+            if not allowed:
+                from agent_filetree_memory.domain.errors import AuthorizationDenied
+
+                raise AuthorizationDenied("denied")
+            return None
+
+    async def identity():
+        return ManagementPrincipal(
+            "person",
+            "person@example.test",
+            "Person",
+            can_create_workspaces=allowed,
+            auto_create_personal_workspace=automatic,
+        )
+
+    app = create_management_api(
+        management_store=Store(),
+        namespace_store=object(),
+        memory_service=object(),
+        principal_dependency=identity,
+        allow_admin_self_grant=False,
+    )
+    with TestClient(app) as client:
+        me = client.get("/me").json()
+        assert me["auto_create_personal_workspace"] is (automatic and allowed)
+        response = client.post("/onboarding/personal-workspace")
+        assert response.status_code == (200 if automatic and allowed else 403)

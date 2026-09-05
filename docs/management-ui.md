@@ -143,3 +143,14 @@ grants.
 The UI has no decryption shortcut. It invokes the same authorization-first
 `MemoryService` used by MCP, and encrypted content is decrypted only after the
 current principal has an applicable explicit or inherited content role.
+
+
+Hosted first-run onboarding can also set `ManagementPrincipal.auto_create_personal_workspace=True`.
+The UI then calls `POST /onboarding/personal-workspace` after authentication, creates a private,
+invite-only **Personal** workspace, and selects it before asking for an agent memory name. No profile
+name is required. Its URL uses a random `personal-<uuid>` slug without an email or user identifier.
+This explicit POST still requires the trusted creation capability and consumes the normal creator
+allowance. Under the same principal provisioning lock, it does nothing once the user has created
+any workspace; joined memberships do not suppress it. Repeated and concurrent calls cannot create
+duplicates even when the configured quota is greater than one. Existing named workspaces remain
+unchanged. The automatic flag defaults off for self-hosted deployments.

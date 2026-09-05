@@ -1176,6 +1176,53 @@ class ManagementStore:
         is_platform_admin: bool = False,
         can_create_workspaces: bool = False,
     ) -> WorkspaceSummary:
+        item = await self._create_workspace(
+            principal_id=principal_id,
+            workspace_slug=workspace_slug,
+            admission_policy=admission_policy,
+            agent_creation_policy=agent_creation_policy,
+            is_platform_admin=is_platform_admin,
+            can_create_workspaces=can_create_workspaces,
+        )
+        assert item is not None
+        return item
+
+    async def ensure_personal_workspace(
+        self,
+        *,
+        principal_id: str,
+        is_platform_admin: bool = False,
+        can_create_workspaces: bool = False,
+    ) -> WorkspaceSummary | None:
+        """Provision the first created workspace once, regardless of invited memberships.
+
+        Returns the new workspace, or None if this principal has created any workspace
+        already. The creator lock also serializes manual creation and ownership transfers
+        never replenish this allowance. A random suffix avoids exposing email or identity.
+        """
+        return await self._create_workspace(
+            principal_id=principal_id,
+            workspace_slug=f"personal-{uuid4().hex}",
+            is_platform_admin=is_platform_admin,
+            can_create_workspaces=can_create_workspaces,
+            only_if_first=True,
+        )
+
+    async def _create_workspace(
+        self,
+        *,
+        principal_id: str,
+        workspace_slug: str,
+        admission_policy: WorkspaceAdmissionPolicy = (
+            WorkspaceAdmissionPolicy.INVITE_ONLY
+        ),
+        agent_creation_policy: WorkspaceAgentCreationPolicy = (
+            WorkspaceAgentCreationPolicy.ADMINS_ONLY
+        ),
+        is_platform_admin: bool = False,
+        can_create_workspaces: bool = False,
+        only_if_first: bool = False,
+    ) -> WorkspaceSummary | None:
         if is_platform_admin is not True and can_create_workspaces is not True:
             raise AuthorizationDenied(_AUTHORIZATION_DENIED)
         try:
@@ -1221,6 +1268,8 @@ class ManagementStore:
                     )
                 )
             ).scalar_one()
+            if only_if_first and count > 0:
+                return None
             if count >= self._max_workspaces_per_principal:
                 raise ManagementConflict("workspace limit reached")
             workspace_id = uuid4().hex

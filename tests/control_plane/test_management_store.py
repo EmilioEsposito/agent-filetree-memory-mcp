@@ -1213,3 +1213,41 @@ async def test_self_service_creation_invited_membership_and_atomic_quota() -> No
         finally:
             for slug in (shared, own, raced):
                 await _delete_workspace(sessions, slug)
+
+
+@pytest.mark.live
+async def test_personal_workspace_bootstrap_is_once_even_with_spare_quota() -> None:
+    principal = f"bootstrap-{uuid4().hex}"
+    created_slugs = []
+    async with _live_stores() as (management, _namespaces, sessions):
+        try:
+            await _register(management, principal, f"{principal}@example.test")
+            with pytest.raises(AuthorizationDenied):
+                await management.ensure_personal_workspace(principal_id=principal)
+            results = await asyncio.gather(
+                *[
+                    management.ensure_personal_workspace(
+                        principal_id=principal, can_create_workspaces=True
+                    )
+                    for _ in range(3)
+                ]
+            )
+            created = [item for item in results if item is not None]
+            created_slugs.extend(item.slug for item in created)
+            assert len(created) == 1
+            assert created[0].role is WorkspaceRole.OWNER
+            assert created[0].admission_policy is WorkspaceAdmissionPolicy.INVITE_ONLY
+            assert created[0].slug.startswith("personal-")
+            count, limit = await management.workspace_creation_usage(
+                principal_id=principal
+            )
+            assert count == 1 and limit > 1
+            assert (
+                await management.ensure_personal_workspace(
+                    principal_id=principal, can_create_workspaces=True
+                )
+                is None
+            )
+        finally:
+            for slug in created_slugs:
+                await _delete_workspace(sessions, slug)
