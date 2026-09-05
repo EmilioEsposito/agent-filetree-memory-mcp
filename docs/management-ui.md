@@ -52,6 +52,12 @@ intentionally unavailable in the standalone renderer.
 `FrontendAuthConfig` supports three deployment-neutral modes:
 
 - `oidc`: use Authorization Code with PKCE through a configured public client.
+
+Providers may omit the OIDC end-session endpoint. In that case, sign-out revokes this
+application's tokens when the provider advertises revocation, then clears the browser's
+local app session. The identity provider's own browser session remains active; a later
+sign-in can reuse it. Providers advertising an end-session endpoint use the standard
+redirect logout flow.
   The issuer, client ID, scopes, and token field are public browser metadata;
   the management API must still verify every bearer token independently.
 - `session`: rely on an authenticated same-origin cookie established by the

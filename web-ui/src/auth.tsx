@@ -87,8 +87,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         managerRef.current = manager;
         const params = new URLSearchParams(window.location.search);
         let current: User | null;
-        if (params.has("code") && params.has("state")) {
-          current = await manager.signinRedirectCallback();
+        if (params.has("state") && (params.has("code") || params.has("error"))) {
+          try {
+            current = await manager.signinRedirectCallback();
+          } catch (caught) {
+            // Consume error callbacks too, and keep stale OAuth parameters out of retries.
+            window.history.replaceState(null, "", root);
+            throw caught;
+          }
           const returnSearch =
             typeof current.state === "string" ? current.state : "";
           window.history.replaceState(
@@ -121,7 +127,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     if (!config || config.auth.mode !== "oidc" || !managerRef.current) return;
-    await managerRef.current.signoutRedirect();
+    const manager = managerRef.current;
+    setError("");
+    automaticLoginStarted.current = true;
+    try {
+      if (await manager.metadataService.getEndSessionEndpoint()) {
+        await manager.signoutRedirect();
+        return;
+      }
+      // OIDC providers may omit RP-initiated logout (for example Clerk). Revoke this
+      // application's tokens when supported and always clear its local session.
+      try {
+        if (await manager.metadataService.getRevocationEndpoint()) {
+          await manager.revokeTokens(["access_token", "refresh_token"]);
+        }
+      } catch {
+        setError(
+          "Signed out of this app. Provider token revocation could not be confirmed; your identity-provider session may still be active.",
+        );
+      } finally {
+        await manager.removeUser();
+        setUser(null);
+      }
+    } catch {
+      setError("Sign-out could not complete at the identity provider. Please try again.");
+    }
   }, [config]);
 
   const getToken = useCallback(async (): Promise<string | null> => {
