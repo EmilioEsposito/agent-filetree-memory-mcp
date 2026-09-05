@@ -122,12 +122,34 @@ heterogeneous files and broader workflows beyond this small search suite.
 
 The [initial run](../evals/results/public-search-initial.json) on September 5,
 2026 used the command above: **15/18 successes**, zero tool errors, and about
-$0.0125 in observed OpenRouter key usage. Two suffix-count trials answered 148
+$0.0171 in reported inference cost. Two suffix-count trials answered 148
 and 123 after receiving all 124 matching paths. One word-count trial answered 81
 after receiving 80 and 3 matching lines. Every other trial passed. These failures
 isolate a useful next experiment: a count output mode could avoid asking the
 model to count long result arrays, provided it clearly distinguishes partial
 scans from complete counts. No tool/prompt tuning or reruns followed this result.
+
+A [GLM 5.3 Flash run](../evals/results/public-search-glm-flash.json) on the same
+date used the identical dataset, catalog, and limits, replacing the model with
+`z-ai/glm-5.3-flash` and provider with `deepinfra` (its FP4 deployment).
+
+| Metric, 18 attempted trials | GPT-5.4-nano | GLM 5.3 Flash |
+| --- | ---: | ---: |
+| Successful trials | 15/18 | 15/18 |
+| Inference errors | 0 | 1 |
+| MCP calls, total | 22 | 32 |
+| Input tokens, total | 147,566 | 245,085 |
+| Output tokens, total | 4,197 | 2,445 |
+| Reported inference cost | $0.0171 | $0.0175 |
+
+GLM had one provider 429 before any tool call, one incorrect count (122 versus
+124), and one correct count with extra prose that violated the JSON-only answer
+contract. The provider error stays in the denominator; formatting and factual
+errors remain distinct. No failed trials were replaced. This small sample does
+not establish a model winner. It also illustrates why cheaper per-token pricing
+does not guarantee a cheaper task run. Costs sum returned response usage,
+excluding smoke probes; the rejected GLM trial reported no usage. Nano's earlier
+$0.0125 account-counter observation lagged; the result file retains both values.
 
 ## Optional Logfire
 

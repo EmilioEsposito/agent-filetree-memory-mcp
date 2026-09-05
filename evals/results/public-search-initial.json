@@ -87,5 +87,8 @@
     "One whole-word trial answered 81 after nontruncated grep responses containing 80 and 3 matching lines. Correct total: 83.",
     "All three failures were incorrect final counts after complete correct retrieval; no runtime errors or tool errors occurred.",
     "Fixtures, graders, and tool catalog stayed fixed throughout the run. No model trials were discarded or rerun after inspecting failures."
-  ]
+  ],
+  "reported_inference_cost_usd": "0.01706473",
+  "trials_with_reported_cost": 18,
+  "cost_note": "Use the summed per-response cost for comparison. The earlier observed key-usage delta is retained for provenance but was sampled before the account counter fully updated."
 }
