@@ -1124,3 +1124,93 @@ async def test_missing_policy_row_falls_back_to_least_privilege() -> None:
                 )
         finally:
             await _delete_workspace(sessions, workspace_slug)
+
+
+@pytest.mark.live
+async def test_self_service_creation_invited_membership_and_atomic_quota() -> None:
+    suffix = uuid4().hex
+    owner, member = f"owner-{suffix}", f"member-{suffix}"
+    shared, own, raced = f"shared-{suffix}", f"own-{suffix}", f"raced-{suffix}"
+    async with _live_stores() as (_management, namespaces, sessions):
+        management = ManagementStore(
+            sessions,
+            integrity_key=_INTEGRITY_KEY,
+            tables=namespace_tables_for_schema(),
+            max_workspaces_per_principal=1,
+        )
+        try:
+            await _register(management, owner, f"owner-{suffix}@example.test")
+            await _register(management, member, f"member-{suffix}@example.test")
+            with pytest.raises(AuthorizationDenied):
+                await management.create_workspace(
+                    principal_id=owner, workspace_slug=shared
+                )
+            workspace = await management.create_workspace(
+                principal_id=owner, workspace_slug=shared, can_create_workspaces=True
+            )
+            assert workspace.role is WorkspaceRole.OWNER
+            assert workspace.admission_policy is WorkspaceAdmissionPolicy.INVITE_ONLY
+            assert workspace.can_create_agents is True
+            await management.create_agent(
+                principal_id=owner,
+                workspace_slug=shared,
+                agent_slug="assistant",
+                display_alias="Assistant",
+            )
+            assert (
+                await management.invite_member(
+                    principal_id=owner,
+                    workspace_slug=shared,
+                    email=f"member-{suffix}@example.test",
+                    role=WorkspaceRole.MEMBER,
+                )
+                == "member"
+            )
+            assert await management.workspace_creation_usage(principal_id=member) == (
+                0,
+                1,
+            )
+            # Joining a workspace doesn't spend the one creation slot. Parallel requests do.
+            results = await asyncio.gather(
+                *[
+                    management.create_workspace(
+                        principal_id=member,
+                        workspace_slug=slug,
+                        can_create_workspaces=True,
+                    )
+                    for slug in (own, raced)
+                ],
+                return_exceptions=True,
+            )
+            successes = [r for r in results if not isinstance(r, BaseException)]
+            assert len(successes) == 1
+            assert sum(isinstance(r, ManagementConflict) for r in results) == 1
+            assert successes[0].role is WorkspaceRole.OWNER
+            assert await management.workspace_creation_usage(principal_id=member) == (
+                1,
+                1,
+            )
+            assert len(await management.list_workspaces(principal_id=member)) == 2
+            # The new owner gains neither administration nor content access in the invited workspace.
+            with pytest.raises(AuthorizationDenied):
+                await management.create_agent(
+                    principal_id=member,
+                    workspace_slug=shared,
+                    agent_slug="not-allowed",
+                    display_alias="Not allowed",
+                )
+            with pytest.raises(AuthorizationDenied):
+                await management.assign_platform_admin_role(
+                    principal_id=member, workspace_slug=shared, is_platform_admin=False
+                )
+            with pytest.raises(AuthorizationDenied):
+                await namespaces.resolve_or_create(
+                    principal_id=member,
+                    workspace_slug=shared,
+                    agent_slug="assistant",
+                    action=MemoryAction.READ,
+                )
+        finally:
+            for slug in (shared, own, raced):
+                await _delete_workspace(sessions, slug)
+

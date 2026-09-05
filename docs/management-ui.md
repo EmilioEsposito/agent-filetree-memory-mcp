@@ -71,11 +71,29 @@ registered for the exact externally visible `/ui/` URL.
 
 ## Authorization and decryption
 
-The host maps its verified identity into `ManagementPrincipal`. Only principals
-with `is_platform_admin=True` may create workspaces. A platform administrator
+The host maps its verified identity into `ManagementPrincipal`. Workspace creation requires
+`can_create_workspaces=True` or `is_platform_admin=True`; both default to false. The narrow
+creation permission is a trusted host decision and cannot be supplied in request JSON. A host
+can grant it to verified signups or withhold it under an enterprise/domain policy without
+changing existing memberships. A platform administrator
 may list workspace metadata globally, but cannot list agent slugs until they
 explicitly join the workspace or assign themselves its administrator role. That
 role assignment is audited and does not grant content access.
+
+Creating a workspace atomically assigns its creator the owner role, with authority to invite
+teammates and create agents. Creation does not grant global inventory, platform role assignment,
+or rights in other workspaces. New workspaces default to invite-only admission. Agent creators
+receive explicit management and full content access to their new agent.
+
+`GET /me` exposes the effective `can_create_workspaces` capability, restriction (`policy` or
+`quota`), `created_workspace_count`, and `workspace_creation_limit`. The UI shows creation to
+eligible accounts and explains a reached limit. Counts include workspaces created by the
+principal, not memberships gained by invitation. Ownership transfer does not reset the creator's
+allowance; creation rechecks the quota under the principal's provisioning lock.
+
+Workspace owners can open **Manage teammates** even before an agent exists. Pending invitations
+are matched to verified email at sign-in; the engine does not send invitation email. Hosts may
+add delivery separately. Sharing the app URL lets invited teammates sign in and claim access.
 
 Each workspace has two independent policies:
 

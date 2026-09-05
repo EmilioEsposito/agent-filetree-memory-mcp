@@ -1143,6 +1143,25 @@ class ManagementStore:
             ):
                 raise AuthorizationDenied(_AUTHORIZATION_DENIED)
 
+    async def workspace_creation_usage(self, *, principal_id: str) -> tuple[int, int]:
+        """Creator quota, independent of joined workspaces or later ownership transfers.
+
+        This is advisory UI state. Creation rechecks the same count under the principal's
+        provisioning lock, so parallel requests cannot spend the same remaining allowance.
+        """
+        validate_opaque_id(principal_id, field="principal_id")
+        async with self._session_factory() as session:
+            count = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(self._tables.workspaces)
+                    .where(
+                        self._tables.workspaces.c.created_by_principal_id == principal_id
+                    )
+                )
+            ).scalar_one()
+        return count, self._max_workspaces_per_principal
+
     async def create_workspace(
         self,
         *,
@@ -1155,8 +1174,9 @@ class ManagementStore:
             WorkspaceAgentCreationPolicy.ADMINS_ONLY
         ),
         is_platform_admin: bool = False,
+        can_create_workspaces: bool = False,
     ) -> WorkspaceSummary:
-        if is_platform_admin is not True:
+        if is_platform_admin is not True and can_create_workspaces is not True:
             raise AuthorizationDenied(_AUTHORIZATION_DENIED)
         try:
             admission_policy = WorkspaceAdmissionPolicy(admission_policy)
@@ -1244,7 +1264,7 @@ class ManagementStore:
             )
         summaries = await self.list_workspaces(
             principal_id=principal_id,
-            is_platform_admin=True,
+            is_platform_admin=is_platform_admin,
         )
         return next(item for item in summaries if item.slug == workspace_slug)
 

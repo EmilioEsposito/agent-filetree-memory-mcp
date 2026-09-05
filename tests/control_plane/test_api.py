@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Annotated
 
+import pytest
+
 from fastapi import Header, HTTPException
 from fastapi.testclient import TestClient
 
@@ -28,6 +30,9 @@ from agent_filetree_memory.domain.models import (
 class _ManagementStore:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def workspace_creation_usage(self, **kwargs):
+        return 0, 10
 
     async def register_principal(self, **kwargs) -> None:
         self.calls.append(("principal", kwargs))
@@ -85,6 +90,10 @@ def test_management_api_uses_injected_identity_and_separate_policy() -> None:
         "email": "person@example.test",
         "display_name": "Example person",
         "is_platform_admin": False,
+        "can_create_workspaces": False,
+        "workspace_creation_restriction": "policy",
+        "created_workspace_count": 0,
+        "workspace_creation_limit": 10,
         "allow_admin_self_grant": True,
     }
     assert policy.json() == {
@@ -292,3 +301,64 @@ def test_management_history_endpoints_keep_actions_and_attribution_distinct() ->
         MemoryAction.HISTORY_LIST,
         MemoryAction.HISTORY_READ,
     ]
+
+
+@pytest.mark.parametrize(
+    "allowed,created,expected,restriction",
+    [
+        (False, 0, False, "policy"),
+        (True, 0, True, None),
+        (True, 1, False, "quota"),
+    ],
+)
+def test_creation_capability_is_separate_from_platform_admin(
+    allowed, created, expected, restriction
+):
+    class Store(_ManagementStore):
+        async def workspace_creation_usage(self, **kwargs):
+            return created, 1
+
+    async def identity():
+        return ManagementPrincipal(
+            "person", "person@example.test", "Person", can_create_workspaces=allowed
+        )
+
+    app = create_management_api(
+        management_store=Store(),
+        namespace_store=object(),
+        memory_service=object(),
+        principal_dependency=identity,
+        allow_admin_self_grant=False,
+    )
+    with TestClient(app) as client:
+        me = client.get("/me").json()
+        assert me["is_platform_admin"] is False
+        assert me["can_create_workspaces"] is expected
+        assert me["workspace_creation_restriction"] == restriction
+        if not allowed:
+            assert client.post("/workspaces", json={"slug": "mine"}).status_code == 403
+        # A client cannot grant itself either trusted identity permission through JSON.
+        assert (
+            client.post(
+                "/workspaces", json={"slug": "mine", "can_create_workspaces": True}
+            ).status_code
+            == 422
+        )
+
+
+def test_invalid_creation_capability_fails_closed():
+    async def identity():
+        return ManagementPrincipal(
+            "person", "person@example.test", "Person", can_create_workspaces="true"
+        )
+
+    app = create_management_api(
+        management_store=_ManagementStore(),
+        namespace_store=object(),
+        memory_service=object(),
+        principal_dependency=identity,
+        allow_admin_self_grant=False,
+    )
+    with TestClient(app) as client:
+        assert client.get("/me").status_code == 403
+

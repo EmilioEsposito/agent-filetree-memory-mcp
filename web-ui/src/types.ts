@@ -13,6 +13,10 @@ export interface CurrentPrincipal {
   display_name: string;
   allow_admin_self_grant: boolean;
   is_platform_admin: boolean;
+  can_create_workspaces?: boolean;
+  workspace_creation_restriction?: "policy" | "quota" | null;
+  created_workspace_count?: number;
+  workspace_creation_limit?: number;
 }
 
 export interface WorkspaceSummary {
