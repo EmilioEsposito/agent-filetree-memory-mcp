@@ -1152,6 +1152,8 @@ function AgentMemoryManager() {
                 {workspaceAdmin && (
                   <div className="space-y-2 border-t border-gray-200 pt-3 dark:border-gray-800">
                     <button className={`${BUTTON} w-full bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-200`} onClick={() => setTab("members")}><Users className="h-4 w-4" /> Manage teammates</button>
+                    <details className="space-y-2">
+                      <summary className="cursor-pointer py-1 font-medium text-gray-500">Workspace settings</summary>
                     <label className="block font-medium text-gray-500">Admission policy</label>
                     <select className={INPUT} value={policyAdmissionDraft} onChange={(event) => setPolicyAdmissionDraft(event.target.value as WorkspaceAdmissionPolicy)}>
                       <option value="invite_only">Invite only</option>
@@ -1166,6 +1168,7 @@ function AgentMemoryManager() {
                     <button className={`${BUTTON} w-full bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200`} disabled={busy === "workspace-policy"} onClick={() => void handlePolicySave()}>
                       {busy === "workspace-policy" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save policies
                     </button>
+                    </details>
                   </div>
                 )}
               </div>
