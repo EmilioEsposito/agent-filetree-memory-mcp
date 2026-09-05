@@ -28,8 +28,8 @@ def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def select_cases(split, names):
-    cases = scenarios()
+def select_cases(split, names, suite="memory"):
+    cases = scenarios(suite)
     unknown = set(names or ()) - {case.name for case in cases}
     if unknown:
         raise ValueError(f"unknown cases: {', '.join(sorted(unknown))}")
@@ -120,6 +120,7 @@ async def execute_case(case, args, catalog):
     checks = grade_outcome(case, outcome)
     return outcome, {
         "case": case.name,
+        "provenance": case.provenance,
         "success": all(checks.values()),
         "checks": checks,
         "state_difference": state_difference(case, outcome.files),
@@ -131,7 +132,7 @@ async def execute_case(case, args, catalog):
 async def run(args):
     from dotenv import load_dotenv
 
-    selected = select_cases(args.split, args.case)
+    selected = select_cases(args.split, args.case, args.suite)
     load_dotenv(".env", override=False)
     if args.logfire:
         import logfire
@@ -145,6 +146,7 @@ async def run(args):
         "status": "running",
         "label": args.label,
         "driver": args.driver,
+        "suite": args.suite,
         "model": args.model,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": subprocess.check_output(
@@ -157,7 +159,13 @@ async def run(args):
         "harness_sha256": fingerprint(
             {
                 name: (harness / name).read_text()
-                for name in ("run.py", "drivers.py", "environment.py", "graders.py")
+                for name in (
+                    "run.py",
+                    "drivers.py",
+                    "environment.py",
+                    "graders.py",
+                    "reference_search.py",
+                )
             }
         ),
         "runtime_versions": {
@@ -205,7 +213,7 @@ async def run(args):
         return outcome
 
     dataset = Dataset(
-        name="memory-tools",
+        name=f"memory-tools-{args.suite}",
         cases=[Case(name=c.name, inputs=c) for c in selected],
         evaluators=[TaskSuccess()],
     )
@@ -255,6 +263,12 @@ def main():
     )
     parser.add_argument("--split", choices=["dev", "validation", "all"], default="dev")
     parser.add_argument(
+        "--suite",
+        choices=["memory", "public-search", "all"],
+        default="memory",
+        help="original memory tasks, adapted AgentBench search tasks, or both",
+    )
+    parser.add_argument(
         "--case", action="append", help="select a named case (repeatable)"
     )
     parser.add_argument("--repeat", type=int, default=1)
@@ -282,7 +296,7 @@ def main():
     if min(args.repeat, args.max_calls, args.timeout) < 1:
         parser.error("repeat, max-calls and timeout must be positive")
     try:
-        select_cases(args.split, args.case)
+        select_cases(args.split, args.case, args.suite)
     except ValueError as exc:
         parser.error(str(exc))
     return asyncio.run(run(args))

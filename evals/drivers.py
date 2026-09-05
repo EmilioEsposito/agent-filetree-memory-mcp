@@ -111,6 +111,10 @@ async def api_agent(
 
 async def reference_agent(server, case):
     """Known solution for checking the environment and graders; not an LLM eval."""
+    if case.provenance.get("benchmark") == "AgentBench-OS":
+        from .reference_search import reference_search
+
+        return await reference_search(server, case.name), {}
     async with Client(server) as client:
         for index, (path, content) in enumerate(case.writes.items()):
             args = {

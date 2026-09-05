@@ -17,6 +17,7 @@ from evals.compare import compare
 def arguments(tmp_path, **overrides):
     values = dict(
         split="all",
+        suite="memory",
         case=["find-decision"],
         driver="reference",
         model=None,
@@ -134,6 +135,26 @@ def test_case_selection_rejects_typos_and_silent_split_exclusion():
         runner.select_cases("all", ["find-decision", "typo"])
     with pytest.raises(ValueError, match="outside selected split"):
         runner.select_cases("dev", ["unicode-preservation"])
+
+
+@pytest.mark.parametrize("correct", [False, True])
+async def test_public_search_json_oracle_controls_report_success(
+    tmp_path, monkeypatch, correct
+):
+    case = scenarios("public-search")[0]
+    monkeypatch.setattr(runner, "environment", fake_environment(case))
+
+    async def reference(server, scenario):
+        return json.dumps(case.answer_json if correct else {"paths": []}), {}
+
+    monkeypatch.setattr(runner, "reference_agent", reference)
+    args = arguments(tmp_path, suite="public-search", case=[case.name], repeat=1)
+    assert await runner.run(args) == (0 if correct else 1)
+    report = json.loads(args.output.read_text())
+    assert report["suite"] == "public-search"
+    assert report["runs"][0]["success"] is correct
+    assert report["runs"][0]["checks"]["answer_correct"] is correct
+    assert report["runs"][0]["provenance"] == case.provenance
 
 
 async def test_trial_checkpoints_are_written_before_experiment_finishes(

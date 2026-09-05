@@ -11,7 +11,7 @@ Install [uv](https://docs.astral.sh/uv/) and start Docker. From the repository r
 ```sh
 uv sync --locked --group evals
 uv run python -m devtools.postgres
-uv run python -m devtools.postgres -- uv run --group evals python -m evals.run --split all
+uv run python -m devtools.postgres -- uv run --group evals python -m evals.run --suite all --split all
 ```
 
 The first command after installation runs **all** tests, including PostgreSQL
@@ -21,7 +21,8 @@ benchmark**. Each invocation starts a loopback-only PostgreSQL container with a
 random password/port, no persistent volume, and cleanup on exit. Each eval case
 gets a separate schema initialized by the shipped migrations, random encryption
 keys, and the production store and MCP adapter. This validates the same schema
-installation path used by standalone deployments. An existing disposable database can be supplied with
+installation path used by standalone deployments. An existing disposable database
+can be supplied with
 `AGENT_FILETREE_MEMORY_TEST_DATABASE_URL` instead of the Docker wrapper.
 
 For an actual model run, set `OPENROUTER_API_KEY` in the environment or an ignored
@@ -59,7 +60,8 @@ request/token/tool-call limits, and reports failures with a nonzero exit status.
 Model messages and partial usage are retained on failures too, including argument
 validation retries that never reach MCP. `--provider` pins an OpenRouter provider
 and disables fallback so an experiment does not silently switch serving providers.
-For historical comparisons, run the same frozen dataset and compatible harness from two Git worktrees;
+For historical comparisons, run the same frozen dataset and compatible harness
+from two Git worktrees;
 do not recreate an approximate old tool description from memory.
 
 Format 2 reports checkpoint each finished trial using atomic file replacement.
@@ -100,6 +102,58 @@ The validation partition also covers coordinated edits to two files and an
 untrusted instruction embedded in a retrieved memory. Their graders check the
 entire final tree, including preservation of unrelated files. Reference replay
 validates these oracles; it does not demonstrate that a model resists injection.
+
+## Public filesystem-search tasks
+
+`--suite public-search` selects six adaptations from
+[AgentBench-OS](https://github.com/THUDM/AgentBench), a public benchmark of agents
+using an operating system. They exercise the same search operations through this
+MCP, with deterministic Markdown fixtures and no shell access:
+
+| Case | What it checks |
+| --- | --- |
+| `search-exact-basename` | Complete path set; case, suffix, and directory decoys |
+| `search-file-absence` | Recursive absence; a same-named directory is not a file |
+| `search-hidden-filter` | Hidden files, character exclusion, nonrecursive scope |
+| `search-recursive-suffix` | 124 matching filenames across directories and pages |
+| `search-word-lines` | Case-insensitive whole words, lines versus occurrences, scope, pagination |
+| `search-log-set-difference` | Exact trader identity, distinct symbols, evidence beyond the first read page |
+
+Run the free reference first, then a small actual model experiment:
+
+```sh
+uv run python -m devtools.postgres -- uv run --group evals python -m evals.run --suite public-search
+uv run python -m devtools.postgres -- uv run --group evals python -m evals.run \
+  --suite public-search --driver openrouter --model openai/gpt-5.4-nano \
+  --provider openai --repeat 3 --label public-search \
+  --output eval-results/public-search.json
+```
+
+These tasks require small JSON answers so the grader can reject missing **and
+extra** paths, wrong counts, duplicate results, and wrong types. Path/symbol order
+is irrelevant. The entire saved tree must remain unchanged. The reference driver
+calculates answers from actual MCP results; unit tests independently recompute
+gold answers and test grader failures. CI runs all 18 free reference cases with
+`--suite all --split all`. The default `--suite memory` selects 12 memory tasks;
+the six public-search cases form a separate development suite.
+
+See [provenance and adaptation notes](../evals/fixtures/public_search/README.md)
+for pinned task records, licenses, and two corrected upstream inconsistencies.
+These are **adapted development cases, not an official AgentBench score** or a
+held-out benchmark. Keep them fixed for comparisons and add unseen tasks before
+making broader claims. [InterCode-Bash](https://github.com/princeton-nlp/intercode)
+is another relevant public benchmark; larger
+[Workspace-Bench](https://github.com/OpenDataBox/Workspace-Bench) tasks involve
+heterogeneous files and broader workflows beyond this small search suite.
+
+The [initial run](../evals/results/public-search-initial.json) on September 5,
+2026 used the command above: **15/18 successes**, zero tool errors, and about
+$0.0125 in observed OpenRouter key usage. Two suffix-count trials answered 148
+and 123 after receiving all 124 matching paths. One word-count trial answered 81
+after receiving 80 and 3 matching lines. Every other trial passed. These failures
+isolate a useful next experiment: a count output mode could avoid asking the
+model to count long result arrays, provided it clearly distinguishes partial
+scans from complete counts. No tool/prompt tuning or reruns followed this result.
 
 ## Optional Logfire
 
