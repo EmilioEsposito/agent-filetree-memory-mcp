@@ -30,19 +30,25 @@ root `.env`, then run two cheap smoke cases first:
 
 ```sh
 uv run python -m devtools.postgres -- uv run --group evals python -m evals.run \
-  --driver openrouter --model z-ai/glm-5.3-flash \
+  --driver openrouter --provider openai \
   --case find-decision --case targeted-edit --output eval-results/smoke.json
 ```
 
+The OpenRouter driver defaults to **GPT-5.6 Luna** (`openai/gpt-5.6-luna`) with
+explicit **low** reasoning effort. All OpenRouter runs use low effort; another
+model requires an explicit `--model` override. With no `--driver`, the runner
+still uses the free reference solution.
+
 OpenRouter uses only the inference key; the runner never needs a management key.
 Use a dedicated key with a spending cap. Prices/provider availability change;
-check the [model page](https://openrouter.ai/z-ai/glm-5.3-flash) before longer runs.
+check the [model page](https://openrouter.ai/openai/gpt-5.6-luna) before longer runs.
 For another provider, use `--driver api --model provider:model` and its normal
 environment credentials (OpenAI and Anthropic adapters are installed).
 
 ## Compare changes
 
-Before changing tools, run `--split dev --repeat 3 --label baseline --output
+Before changing tools, run `--driver openrouter --provider openai --split dev
+--repeat 3 --label baseline --output
 eval-results/baseline.json`. Run the same command after the change with label
 `candidate` and a new output path. Then:
 
@@ -124,7 +130,7 @@ Run the free reference first, then a small actual model experiment:
 ```sh
 uv run python -m devtools.postgres -- uv run --group evals python -m evals.run --suite public-search
 uv run python -m devtools.postgres -- uv run --group evals python -m evals.run \
-  --suite public-search --driver openrouter --model openai/gpt-5.4-nano \
+  --suite public-search --driver openrouter \
   --provider openai --repeat 3 --label public-search \
   --output eval-results/public-search.json
 ```
@@ -147,7 +153,8 @@ is another relevant public benchmark; larger
 heterogeneous files and broader workflows beyond this small search suite.
 
 The [initial run](../evals/results/public-search-initial.json) on September 5,
-2026 used the command above: **15/18 successes**, zero tool errors, and about
+2026 explicitly selected `--model openai/gpt-5.4-nano --provider openai` with
+three trials per case: **15/18 successes**, zero tool errors, and about
 $0.0171 in reported inference cost. Two suffix-count trials answered 148
 and 123 after receiving all 124 matching paths. One word-count trial answered 81
 after receiving 80 and 3 matching lines. Every other trial passed. These failures

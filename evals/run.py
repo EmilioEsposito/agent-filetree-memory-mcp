@@ -22,6 +22,7 @@ from .environment import environment
 from .graders import Outcome, TaskSuccess, grade_outcome, state_difference
 
 FINALIZATION_TIMEOUT = 30
+DEFAULT_OPENROUTER_MODEL = "openai/gpt-5.6-luna"
 
 
 def fingerprint(value):
@@ -255,7 +256,11 @@ def main():
         "--driver", choices=["reference", "api", "openrouter"], default="reference"
     )
     parser.add_argument(
-        "--model", help="Pydantic AI provider:model for api, or OpenRouter model ID"
+        "--model",
+        help=(
+            "Pydantic AI provider:model for api, or OpenRouter model ID "
+            f"(OpenRouter default: {DEFAULT_OPENROUTER_MODEL}; reasoning effort: low)"
+        ),
     )
     parser.add_argument(
         "--provider",
@@ -290,7 +295,7 @@ def main():
     if args.driver == "api" and not args.model:
         parser.error("--model provider:model is required for the api driver")
     if args.driver == "openrouter" and not args.model:
-        args.model = "z-ai/glm-5.3-flash"
+        args.model = DEFAULT_OPENROUTER_MODEL
     if args.provider and args.driver != "openrouter":
         parser.error("--provider is only supported by the openrouter driver")
     if min(args.repeat, args.max_calls, args.timeout) < 1:
