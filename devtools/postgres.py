@@ -17,16 +17,39 @@ def disposable_postgres():
     password = secrets.token_hex(24)
     try:
         subprocess.run(
-            ["docker", "run", "--detach", "--rm", "--name", name,
-             "--publish", "127.0.0.1::5432", "--env", "POSTGRES_PASSWORD",
-             "--env", "POSTGRES_DB=afm_test", "postgres:17"],
+            [
+                "docker",
+                "run",
+                "--detach",
+                "--rm",
+                "--name",
+                name,
+                "--publish",
+                "127.0.0.1::5432",
+                "--env",
+                "POSTGRES_PASSWORD",
+                "--env",
+                "POSTGRES_DB=afm_test",
+                "postgres:17",
+            ],
             env={**os.environ, "POSTGRES_PASSWORD": password},
-            check=True, stdout=subprocess.DEVNULL,
+            check=True,
+            stdout=subprocess.DEVNULL,
         )
         for _ in range(120):
             ready = subprocess.run(
-                ["docker", "exec", name, "pg_isready", "-U", "postgres", "-d", "afm_test"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                [
+                    "docker",
+                    "exec",
+                    name,
+                    "pg_isready",
+                    "-U",
+                    "postgres",
+                    "-d",
+                    "afm_test",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             if ready.returncode == 0:
                 break
@@ -38,8 +61,11 @@ def disposable_postgres():
         ).strip()
         yield f"postgresql+asyncpg://postgres:{password}@{address}/afm_test"
     finally:
-        subprocess.run(["docker", "rm", "--force", name],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["docker", "rm", "--force", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 def main():
@@ -49,9 +75,13 @@ def main():
     if not command:
         command = ["uv", "run", "--locked", "pytest", "-m", ""]
     with disposable_postgres() as url:
-        result = subprocess.run(command, env={
-            **os.environ, "AGENT_FILETREE_MEMORY_TEST_DATABASE_URL": url,
-        })
+        result = subprocess.run(
+            command,
+            env={
+                **os.environ,
+                "AGENT_FILETREE_MEMORY_TEST_DATABASE_URL": url,
+            },
+        )
     return result.returncode
 
 

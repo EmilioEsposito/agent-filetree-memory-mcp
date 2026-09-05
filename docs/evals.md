@@ -55,6 +55,9 @@ The model sees the task and real MCP schemas; it never receives expected state o
 the scripted solution. The API driver invokes the actual MCP protocol via the
 FastMCP client, without shell access. It uses sequential calls, a per-case timeout,
 request/token/tool-call limits, and reports failures with a nonzero exit status.
+Model messages and partial usage are retained on failures too, including argument
+validation retries that never reach MCP. `--provider` pins an OpenRouter provider
+and disables fallback so an experiment does not silently switch serving providers.
 For historical comparisons, run the same frozen dataset from two Git worktrees;
 do not recreate an approximate old tool description from memory.
 

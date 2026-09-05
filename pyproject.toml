@@ -1,6 +1,6 @@
 [project]
 name = "agent-filetree-memory-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "Encrypted, capability-scoped, versioned Markdown file-tree memory for MCP agents"
 readme = "README.md"
 license = "Apache-2.0"
@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "cryptography>=49.0.0,<51",
     "PyJWT[crypto]>=2.13.0,<3",
+    "regex>=2026.1.14,<2027",
     "typing_extensions>=4.12,<5; python_version < '3.12'",
 ]
 
@@ -94,6 +95,7 @@ include = [
     "/SECURITY.md",
     "/LICENSE",
     "/pyproject.toml",
+    "/uv.lock",
 ]
 exclude = ["/web-ui/node_modules"]
 

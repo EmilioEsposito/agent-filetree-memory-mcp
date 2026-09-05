@@ -21,6 +21,10 @@ class VersionConflict(MemoryError):
     """The expected version no longer matches the current version."""
 
 
+class EditConflict(MemoryError):
+    """An exact-text edit has no match, ambiguous matches, or no change."""
+
+
 class IdempotencyConflict(MemoryError):
     """An idempotency key was reused for a different request."""
 

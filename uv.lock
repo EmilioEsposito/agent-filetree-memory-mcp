@@ -12,11 +12,12 @@ required-markers = [
 
 [[package]]
 name = "agent-filetree-memory-mcp"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "regex" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
 
@@ -80,6 +81,7 @@ requires-dist = [
     { name = "prefab-ui", marker = "extra == 'all'", specifier = "==0.20.2" },
     { name = "prefab-ui", marker = "extra == 'app'", specifier = "==0.20.2" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0,<3" },
+    { name = "regex", specifier = ">=2026.1.14,<2027" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'all'", specifier = ">=2.0.51,<2.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'postgres'", specifier = ">=2.0.51,<2.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'web'", specifier = ">=2.0.51,<2.1" },

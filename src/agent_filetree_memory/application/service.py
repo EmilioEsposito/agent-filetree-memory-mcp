@@ -236,6 +236,40 @@ class MemoryService:
         self._completed(MemoryAction.APPEND)
         return result
 
+    async def edit(
+        self,
+        invocation: VerifiedInvocation,
+        path: str,
+        old_text: str,
+        new_text: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        replace_all: bool = False,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
+    ) -> WriteResult:
+        self._authorize(invocation, MemoryAction.WRITE)
+        self._authorize(invocation, MemoryAction.READ)
+        normalized = normalize_memory_path(path, allow_root=False)
+        old = self._validate_content(old_text, max_bytes=self._max_content_bytes, allow_empty=False)
+        new = self._validate_content(new_text, max_bytes=self._max_content_bytes, allow_empty=True)
+        if not isinstance(replace_all, bool):
+            raise ValueError("replace_all must be a boolean")
+        self._validate_expected_version(expected_version, allow_none=False)
+        key = self._validate_idempotency_key(idempotency_key)
+        authors = self._validate_co_authors(co_authored_by)
+        comment = self._validate_change_comment(change_comment)
+        result = await self._store.edit(
+            invocation.scope, normalized, old, new, replace_all=replace_all,
+            expected_version=expected_version, idempotency_key=key,
+            max_content_bytes=self._max_content_bytes,
+            invocation_id=invocation.invocation_id, principal_id=invocation.principal_id,
+            co_authored_by=authors, change_comment=comment,
+        )
+        self._completed(MemoryAction.WRITE)
+        return result
+
     async def delete(
         self,
         invocation: VerifiedInvocation,

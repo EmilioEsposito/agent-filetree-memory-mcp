@@ -27,15 +27,16 @@ SCOPE_ARGUMENTS = {
 }
 
 
-async def test_headless_protocol_exposes_exactly_seven_bounded_tools(
-    service, resolver
-):
+async def test_headless_protocol_exposes_ten_bounded_tools(service, resolver):
     server = create_mcp_server(service, resolver, include_app=False)
 
     async with Client(server) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
 
     assert set(tools) == {
+        "memory_glob",
+        "memory_grep",
+        "memory_edit",
         "memory_list",
         "memory_read",
         "memory_history_list",
@@ -78,6 +79,27 @@ async def test_mutation_schemas_encode_create_only_cas_and_safe_retries(
         assert "expected_version" in schema["required"]
         assert schema["properties"]["expected_version"]["minimum"] == 1
         assert "idempotency_key" in schema["required"]
+
+
+@pytest.mark.parametrize(
+    "name", ["memory_glob", "memory_grep", "memory_edit", "memory_read"]
+)
+async def test_new_tool_malformed_or_missing_arguments_authorize_before_validation(
+    service, caplog, name
+):
+    async def deny(ctx, action):
+        raise AuthorizationDenied("memory operation is not authorized")
+
+    marker = "PRIVATE-NEW-TOOL-INPUT"
+    server = create_mcp_server(service, deny)
+    async with Client(server) as client:
+        result = await client.call_tool(
+            name, {"path": {"private": marker}}, raise_on_error=False
+        )
+    assert result.is_error
+    assert "not authorized" in result.content[0].text
+    assert marker not in repr(result) and marker not in caplog.text
+    assert service.calls == []
 
 
 async def test_protocol_calls_resolve_action_and_serialize_domain_results(
@@ -135,9 +157,10 @@ async def test_protocol_calls_resolve_action_and_serialize_domain_results(
         "2026-08-28T16:00:00"
     )
     assert read.structured_content["content"] == PRIVATE_CONTENT
-    assert read.structured_content["version_created_at"] == read.structured_content[
-        "updated_at"
-    ]
+    assert (
+        read.structured_content["version_created_at"]
+        == read.structured_content["updated_at"]
+    )
     assert read.structured_content["committed_by"] == {
         "principal_id": "principal-secret",
         "verification": "authenticated",
@@ -169,9 +192,7 @@ async def test_protocol_calls_resolve_action_and_serialize_domain_results(
     }
     assert appended.structured_content["version"] == 9
     assert deleted.structured_content["deleted_version"] == 9
-    assert deleted.structured_content["purge_after"].startswith(
-        "2026-09-27T16:00:00"
-    )
+    assert deleted.structured_content["purge_after"].startswith("2026-09-27T16:00:00")
     assert [action for _, action in resolver.calls] == [
         MemoryAction.LIST,
         MemoryAction.READ,
@@ -205,12 +226,8 @@ async def test_history_capabilities_are_independent(service, resolver):
         MemoryAction.HISTORY_LIST,
         MemoryAction.HISTORY_READ,
     ]
-    assert service.calls[0][1].allowed_actions == frozenset(
-        {MemoryAction.HISTORY_LIST}
-    )
-    assert service.calls[1][1].allowed_actions == frozenset(
-        {MemoryAction.HISTORY_READ}
-    )
+    assert service.calls[0][1].allowed_actions == frozenset({MemoryAction.HISTORY_LIST})
+    assert service.calls[1][1].allowed_actions == frozenset({MemoryAction.HISTORY_READ})
 
 
 async def test_create_without_expected_version_reaches_service_unchanged(
@@ -350,9 +367,7 @@ async def test_authorized_unexpected_argument_is_rejected_without_echo(
     assert canary not in caplog.text
 
 
-async def test_app_helper_unexpected_argument_uses_same_safe_boundary(
-    resolver, caplog
-):
+async def test_app_helper_unexpected_argument_uses_same_safe_boundary(resolver, caplog):
     class NeverStore:
         called = False
 

@@ -13,6 +13,18 @@ container afterward. No database URL or password needs to be copied manually.
 See [agent evals](evals.md) for the separate, optional LLM evaluation workflow,
 state graders, comparison reports, and Logfire integration.
 
+For interactive MCP testing, use this command as a stdio server in your client
+(with its working directory set to the repository):
+
+```sh
+uv run python -m devtools.postgres -- uv run python -m devtools.serve
+```
+
+It seeds a disposable encrypted tree with synthetic memories, including nested
+projects and a long runbook. All changes disappear when the server exits. It
+does not connect to production memory or require transport credentials. The
+stdio round trip is also covered by the PostgreSQL integration suite.
+
 ## Unit tests
 
 - Capability signature, issuer, audience, expiry, action, and delegation-depth enforcement

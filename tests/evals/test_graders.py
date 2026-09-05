@@ -15,7 +15,9 @@ def score(case, outcome):
 def test_reference_outcomes_satisfy_every_oracle():
     for case in scenarios():
         result = score(case, Outcome(" ".join(case.answer_contains), case.expected))
-        assert result["state_correct"] and result["answer_correct"] and result["completed"]
+        assert (
+            result["state_correct"] and result["answer_correct"] and result["completed"]
+        )
 
 
 def test_claiming_success_without_saving_fails():
@@ -39,3 +41,12 @@ def test_dataset_names_unique_and_validation_split_present():
     cases = scenarios()
     assert len({c.name for c in cases}) == len(cases)
     assert {c.split for c in cases} == {"dev", "validation"}
+
+
+def test_append_accepts_optional_terminal_newline_but_not_prefix_changes():
+    case = next(c for c in scenarios() if c.name == "append-once")
+    path = "/projects/harbor/status.md"
+    files = {**case.expected, path: case.expected[path].removesuffix("\n")}
+    assert score(case, Outcome("Done", files))["state_correct"]
+    files[path] = files[path].replace("pilot", "production")
+    assert not score(case, Outcome("Done", files))["state_correct"]

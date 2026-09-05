@@ -19,7 +19,7 @@ uv build
 uv venv /tmp/agent-filetree-memory-wheel
 uv pip install \
   --python /tmp/agent-filetree-memory-wheel/bin/python \
-  'dist/agent_filetree_memory_mcp-0.4.0-py3-none-any.whl[all]'
+  'dist/agent_filetree_memory_mcp-0.5.0-py3-none-any.whl[all]'
 ```
 
 ## Database prerequisite

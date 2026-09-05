@@ -49,6 +49,56 @@ class DocumentPayload(TypedDict):
     change_comment: str | None
 
 
+class ReadPayload(DocumentPayload):
+    start_line: int
+    start_column: int
+    total_lines: int
+    truncated: bool
+    next_start_line: int | None
+    next_start_column: int | None
+
+
+class DirectoryPayload(MemoryListPayload):
+    truncated: bool
+    next_offset: int | None
+
+
+class GlobPayload(TypedDict):
+    path: str
+    paths: list[str]
+    truncated: bool
+    limit_reasons: list[str]
+    next_offset: int | None
+    scanned_entries: int
+
+
+class SearchLinePayload(TypedDict):
+    line_number: int
+    text: str
+    start_column: int
+    truncated: bool
+
+
+class SearchMatchPayload(TypedDict, total=False):
+    path: str
+    version: int
+    line_number: int
+    text: str
+    start_column: int
+    truncated: bool
+    context: list[SearchLinePayload]
+
+
+class GrepPayload(TypedDict):
+    path: str
+    matches: list[SearchMatchPayload]
+    truncated: bool
+    limit_reasons: list[str]
+    next_offset: int | None
+    scanned_documents: int
+    scanned_bytes: int
+
+
 class AuthenticatedCommitterPayload(TypedDict):
     principal_id: str
     verification: Literal["authenticated"]

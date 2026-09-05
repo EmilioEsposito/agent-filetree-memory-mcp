@@ -64,6 +64,9 @@ async def test_app_exposes_one_model_entry_and_marks_helpers_app_only(
         tools = {tool.name: tool for tool in await client.list_tools()}
 
     assert set(tools) == {
+        "memory_glob",
+        "memory_grep",
+        "memory_edit",
         "memory_list",
         "memory_read",
         "memory_history_list",
