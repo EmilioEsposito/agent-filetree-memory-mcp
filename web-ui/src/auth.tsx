@@ -121,7 +121,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     if (!config || config.auth.mode !== "oidc" || !managerRef.current) return;
-    await managerRef.current.signoutRedirect();
+    const manager = managerRef.current;
+    setError("");
+    automaticLoginStarted.current = true;
+    try {
+      if (await manager.metadataService.getEndSessionEndpoint()) {
+        await manager.signoutRedirect();
+        return;
+      }
+      // OIDC providers may omit RP-initiated logout (for example Clerk). Revoke this
+      // application's tokens when supported and always clear its local session.
+      try {
+        if (await manager.metadataService.getRevocationEndpoint()) {
+          await manager.revokeTokens(["access_token", "refresh_token"]);
+        }
+      } finally {
+        await manager.removeUser();
+        setUser(null);
+      }
+    } catch {
+      setError("Sign-out could not complete at the identity provider. Please try again.");
+    }
   }, [config]);
 
   const getToken = useCallback(async (): Promise<string | null> => {
