@@ -62,7 +62,7 @@ async def api_agent(server, prompt, model, max_calls, *, openrouter=False, provi
                       model_settings=settings, retries=2)
         result = await agent.run(prompt, usage_limits=UsageLimits(
             request_limit=30, tool_calls_limit=max_calls, total_tokens_limit=100000))
-        return result.output, asdict(result.usage())
+        return result.output, asdict(result.usage)
 
 
 async def reference_agent(server, case):
