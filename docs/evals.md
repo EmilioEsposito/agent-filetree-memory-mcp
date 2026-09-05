@@ -120,6 +120,15 @@ is another relevant public benchmark; larger
 [Workspace-Bench](https://github.com/OpenDataBox/Workspace-Bench) tasks involve
 heterogeneous files and broader workflows beyond this small search suite.
 
+The [initial run](../evals/results/public-search-initial.json) on September 5,
+2026 used the command above: **15/18 successes**, zero tool errors, and about
+$0.0125 in observed OpenRouter key usage. Two suffix-count trials answered 148
+and 123 after receiving all 124 matching paths. One word-count trial answered 81
+after receiving 80 and 3 matching lines. Every other trial passed. These failures
+isolate a useful next experiment: a count output mode could avoid asking the
+model to count long result arrays, provided it clearly distinguishes partial
+scans from complete counts. No tool/prompt tuning or reruns followed this result.
+
 ## Optional Logfire
 
 Authenticate/select your own project with the Logfire CLI, or supply its write
