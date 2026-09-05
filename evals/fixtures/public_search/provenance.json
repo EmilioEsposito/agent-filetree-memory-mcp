@@ -1,0 +1,80 @@
+{
+  "search-exact-basename": {
+    "benchmark": "AgentBench-OS",
+    "repository": "https://github.com/THUDM/AgentBench",
+    "revision": "d1e4a10db08c87075c78972e48ecc182be03e2d5",
+    "source_path": "data/os_interaction/data/4/N37.json",
+    "record_pointer": "",
+    "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/4/N37.json",
+    "source_file_sha256": "7372923d614b249e560311c1e61b1ab12afa1d5cbd955e77465d6abd74e9ddaf",
+    "source_record_sha256": "79736e4e6608b99a79f88f39f91ac87cfead5a96e172c1477289d45a6652c34a",
+    "original_prompt": "What's the full path of a file \"TOOLS\"?",
+    "license": "Apache-2.0",
+    "adaptations": "Use Markdown basenames, two matches, and case/suffix/directory decoys. Return the complete path set."
+  },
+  "search-file-absence": {
+    "benchmark": "AgentBench-OS",
+    "repository": "https://github.com/THUDM/AgentBench",
+    "revision": "d1e4a10db08c87075c78972e48ecc182be03e2d5",
+    "source_path": "data/os_interaction/data/4/N41.json",
+    "record_pointer": "/1",
+    "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/4/N41.json",
+    "source_file_sha256": "eb179d6da5e905031a2fe3f2709ee5c3673f8066f484ba4d8e69952891ab165e",
+    "source_record_sha256": "ffebc3881572acfc6626975cdeccda608d38b9b304289f1afa9b94cb3c850cf2",
+    "original_prompt": "If a regular file named \"workspace\" exists in /working (recursively)? If so, output \"yes\", otherwise output \"no\" (with out quotes).",
+    "license": "Apache-2.0",
+    "adaptations": "Use workspace.md; retain the directory-versus-file trap, add an out-of-scope file, and require a JSON boolean."
+  },
+  "search-hidden-filter": {
+    "benchmark": "AgentBench-OS",
+    "repository": "https://github.com/THUDM/AgentBench",
+    "revision": "d1e4a10db08c87075c78972e48ecc182be03e2d5",
+    "source_path": "data/os_interaction/data/4/N11.json",
+    "record_pointer": "",
+    "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/4/N11.json",
+    "source_file_sha256": "fd288d038814c5ded8943763f96e001a3e36d5d3c7e7cca52dcd64ffe7f7241a",
+    "source_record_sha256": "7b38e6f4cafdf23f4c4427184b42d476df5ff6a9b63e1836bb1fd86a0d24ec15",
+    "original_prompt": "How many hidden files, which do not contain the character u, are in /usr? (not recursively)",
+    "license": "Apache-2.0",
+    "adaptations": "Preserve nonrecursive hidden-file filtering and exclude u as the prompt says; upstream example instead excludes k and recurses. Add nested and hidden-directory decoys."
+  },
+  "search-recursive-suffix": {
+    "benchmark": "AgentBench-OS",
+    "repository": "https://github.com/THUDM/AgentBench",
+    "revision": "d1e4a10db08c87075c78972e48ecc182be03e2d5",
+    "source_path": "data/os_interaction/data/3/ac.json",
+    "record_pointer": "/2",
+    "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/3/ac.json",
+    "source_file_sha256": "bc80aa92e75142b18b8c8158a2e059a45f158b303bea7249eaec1d0325e81b81",
+    "source_record_sha256": "834f2bf2e8e7eb9ef2ceea60b15b71557a3c1e34ec5deca3100c344a048582c0",
+    "original_prompt": "Recursively Find how many files have the extension .tep",
+    "license": "Apache-2.0",
+    "adaptations": "Replace .tep with .decision.md and seed 124 matches, beyond the default glob page, plus scope/suffix/case/directory decoys."
+  },
+  "search-word-lines": {
+    "benchmark": "AgentBench-OS",
+    "repository": "https://github.com/THUDM/AgentBench",
+    "revision": "d1e4a10db08c87075c78972e48ecc182be03e2d5",
+    "source_path": "data/os_interaction/data/7/bootstrap.json",
+    "record_pointer": "/3",
+    "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/7/bootstrap.json",
+    "source_file_sha256": "574627bffe5b01c8aaccbde631618b3c8b8fb1e4ec6de06a102e7ee2dec9b7db",
+    "source_record_sha256": "fdf1e19350254876b52801cba49a22c16a9bb8efdc568ccc1fd5b77e7ad7b767",
+    "original_prompt": "Design a problem that challenges students to count the number of lines containing the exact word \"error\" in all files with the extension \".log\" in the current directory (excluding subdirectories). Count only lines where \"error\" appears and is not part of another word and is case-insensitive. For example, \"errors\" and \"ERROR\" should not be counted. The output should be an integer. Ensure that you operate in the current working directory where the files are created.",
+    "license": "Apache-2.0",
+    "adaptations": "Use .log.md notes and deterministic content; count matching lines once. Resolve contradictory upstream wording in favor of case-insensitive whole-word matching, including ERROR."
+  },
+  "search-log-set-difference": {
+    "benchmark": "AgentBench-OS",
+    "repository": "https://github.com/THUDM/AgentBench",
+    "revision": "d1e4a10db08c87075c78972e48ecc182be03e2d5",
+    "source_path": "data/os_interaction/data/1/stock.json",
+    "record_pointer": "/4",
+    "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/1/stock.json",
+    "source_file_sha256": "e52d47b06201d9cad170f446429cc384541a5344fbed1cf478d99cd357508040",
+    "source_record_sha256": "0cb178e67697fe45e57ed0edd6797a0c43201d8532b6f5ec33a43dd31cbdd680",
+    "original_prompt": "Stock logs are shown in /usr/stock.log. The last two columns are stock index and count. Please count the number of types of stocks that Bob sold but never bought. And tell me the answer.",
+    "license": "Apache-2.0",
+    "adaptations": "Replace the random shell-generated log with a deterministic Markdown log and exact trader decoys. Require the stock-symbol set as well as its count."
+  }
+}

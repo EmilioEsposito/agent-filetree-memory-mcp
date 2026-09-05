@@ -14,9 +14,20 @@ class Scenario:
     # A reference solution validates the fixture/grader, not LLM performance.
     writes: dict[str, str] = field(default_factory=dict)
     acceptable_variants: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Search tasks use a structured answer so omissions AND false positives fail.
+    answer_json: dict | None = None
+    provenance: dict = field(default_factory=dict)
 
 
-def scenarios() -> list[Scenario]:
+def scenarios(suite: str = "memory") -> list[Scenario]:
+    if suite == "public-search":
+        from .public_search import search_scenarios
+
+        return search_scenarios()
+    if suite == "all":
+        return scenarios() + scenarios("public-search")
+    if suite != "memory":
+        raise ValueError(f"unknown suite: {suite}")
     noise = {
         f"/archive/team-{i % 4}/note-{i}.md": f"# Retrospective {i}\nOwner: team-{i % 4}\nStatus: archived\n"
         for i in range(24)

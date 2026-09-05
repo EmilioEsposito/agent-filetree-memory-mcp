@@ -11,7 +11,7 @@ Install [uv](https://docs.astral.sh/uv/) and start Docker. From the repository r
 ```sh
 uv sync --locked --group evals
 uv run python -m devtools.postgres
-uv run python -m devtools.postgres -- uv run --group evals python -m evals.run --split all
+uv run python -m devtools.postgres -- uv run --group evals python -m evals.run --suite all --split all
 ```
 
 The first command after installation runs **all** tests, including PostgreSQL
@@ -76,6 +76,49 @@ present reference replay as a model success rate. Compare repeated success rates
 and consistency, not just the best run. Add cases from real failures after
 removing all private information. Keep prompts at the task level; don't tell the
 model which tool sequence the grader prefers.
+
+## Public filesystem-search tasks
+
+`--suite public-search` selects six adaptations from
+[AgentBench-OS](https://github.com/THUDM/AgentBench), a public benchmark of agents
+using an operating system. They exercise the same search operations through this
+MCP, with deterministic Markdown fixtures and no shell access:
+
+| Case | What it checks |
+| --- | --- |
+| `search-exact-basename` | Complete path set; case, suffix, and directory decoys |
+| `search-file-absence` | Recursive absence; a same-named directory is not a file |
+| `search-hidden-filter` | Hidden files, character exclusion, nonrecursive scope |
+| `search-recursive-suffix` | 124 matching filenames across directories and pages |
+| `search-word-lines` | Case-insensitive whole words, lines versus occurrences, scope, pagination |
+| `search-log-set-difference` | Exact trader identity, distinct symbols, evidence beyond the first read page |
+
+Run the free reference first, then a small actual model experiment:
+
+```sh
+uv run python -m devtools.postgres -- uv run --group evals python -m evals.run --suite public-search
+uv run python -m devtools.postgres -- uv run --group evals python -m evals.run \
+  --suite public-search --driver openrouter --model openai/gpt-5.4-nano \
+  --provider openai --repeat 3 --label public-search \
+  --output eval-results/public-search.json
+```
+
+These tasks require small JSON answers so the grader can reject missing **and
+extra** paths, wrong counts, duplicate results, and wrong types. Path/symbol order
+is irrelevant. The entire saved tree must remain unchanged. The reference driver
+calculates answers from actual MCP results; unit tests independently recompute
+gold answers and test grader failures. CI runs all 16 free reference cases with
+`--suite all --split all`. The default `--suite memory` preserves the original
+ten-case selection; the six public-search cases form a separate development suite.
+
+See [provenance and adaptation notes](../evals/fixtures/public_search/README.md)
+for pinned task records, licenses, and two corrected upstream inconsistencies.
+These are **adapted development cases, not an official AgentBench score** or a
+held-out benchmark. Keep them fixed for comparisons and add unseen tasks before
+making broader claims. [InterCode-Bash](https://github.com/princeton-nlp/intercode)
+is another relevant public benchmark; larger
+[Workspace-Bench](https://github.com/OpenDataBox/Workspace-Bench) tasks involve
+heterogeneous files and broader workflows beyond this small search suite.
 
 ## Optional Logfire
 

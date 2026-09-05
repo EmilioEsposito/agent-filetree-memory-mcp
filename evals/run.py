@@ -16,7 +16,7 @@ from pydantic_evals import Case, Dataset
 from .cases import scenarios
 from .drivers import Recorder, api_agent, reference_agent
 from .environment import environment
-from .graders import Outcome, TaskSuccess, state_is_correct
+from .graders import Outcome, TaskSuccess, answer_is_correct, state_is_correct
 
 
 async def run(args):
@@ -29,7 +29,9 @@ async def run(args):
         logfire.configure(service_name="agent-filetree-memory-evals")
         logfire.instrument_pydantic_ai()
     selected = [
-        case for case in scenarios() if args.split == "all" or case.split == args.split
+        case
+        for case in scenarios(args.suite)
+        if args.split == "all" or case.split == args.split
     ]
     if args.case:
         selected = [case for case in selected if case.name in args.case]
@@ -76,13 +78,12 @@ async def run(args):
         success = (
             outcome.error is None
             and state_is_correct(case, outcome.files)
-            and all(
-                t.casefold() in outcome.answer.casefold() for t in case.answer_contains
-            )
+            and answer_is_correct(case, outcome.answer)
         )
         records.append(
             {
                 "case": case.name,
+                "provenance": case.provenance,
                 "success": success,
                 "duration_seconds": time.monotonic() - started,
                 **asdict(outcome),
@@ -91,7 +92,7 @@ async def run(args):
         return outcome
 
     dataset = Dataset(
-        name="memory-tools",
+        name=f"memory-tools-{args.suite}",
         cases=[Case(name=c.name, inputs=c) for c in selected],
         evaluators=[TaskSuccess()],
     )
@@ -106,6 +107,7 @@ async def run(args):
         "format_version": 1,
         "label": args.label,
         "driver": args.driver,
+        "suite": args.suite,
         "model": args.model,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": subprocess.check_output(
@@ -152,6 +154,12 @@ def main():
         help="pin an OpenRouter provider slug, disabling fallbacks for comparable runs",
     )
     parser.add_argument("--split", choices=["dev", "validation", "all"], default="dev")
+    parser.add_argument(
+        "--suite",
+        choices=["memory", "public-search", "all"],
+        default="memory",
+        help="original memory tasks, adapted AgentBench search tasks, or both",
+    )
     parser.add_argument(
         "--case", action="append", help="select a named case (repeatable)"
     )
