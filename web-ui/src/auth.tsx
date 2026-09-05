@@ -141,6 +141,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (await manager.metadataService.getRevocationEndpoint()) {
           await manager.revokeTokens(["access_token", "refresh_token"]);
         }
+      } catch {
+        setError(
+          "Signed out of this app. Provider token revocation could not be confirmed; your identity-provider session may still be active.",
+        );
       } finally {
         await manager.removeUser();
         setUser(null);
