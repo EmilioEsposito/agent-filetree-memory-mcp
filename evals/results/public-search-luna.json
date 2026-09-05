@@ -1,0 +1,94 @@
+{
+  "format_version": 1,
+  "experiment": "public-search-luna",
+  "scope": "Six fixed AgentBench-OS adaptations, three trials each. Same dataset, tool catalog, inference harness, and limits as the Nano and GLM comparisons. Not an official benchmark or evidence of general model superiority.",
+  "created_at": "2026-09-05T16:17:37.655521+00:00",
+  "git_commit": "f59542177481916b6a0765e5aca641cb4ac9ff3f",
+  "dirty": false,
+  "driver": "openrouter",
+  "model": "openai/gpt-5.6-luna",
+  "suite": "public-search",
+  "dataset_sha256": "c51653c76c1aaed5242734a4ff0161b9790c6765429bf7f1f362181df6f54c88",
+  "catalog_sha256": "951f02bcd006020f538f9d59eb6c1e5fe59345921a9d6ebcd9c835192c97e8cf",
+  "settings": {
+    "max_calls": 40,
+    "timeout": 180,
+    "repeat": 3,
+    "provider": "openai",
+    "max_tokens": 4096,
+    "reasoning_effort": "low"
+  },
+  "raw_report_format_version": 1,
+  "harness_source_sha256": {
+    "evals/run.py": "6ff6f455c57299df0ff342d89c8bebf4025740b6eb7130eb1d302182f44c5198",
+    "evals/drivers.py": "ea74ff8b1d730d6ae2d547e4d7dc4ac1d0b32f27338ce0ce6402e6a4dda8ad04",
+    "evals/environment.py": "a5a400f44e583ccd1b2abb65c94171bc8462b800884830d92df71b3b19c7c602",
+    "evals/graders.py": "873b350f4b56547446751ea27df3cdf424ff59678af8219f1c10c13feffe3f0b",
+    "evals/cases.py": "c5606c496c441baec6453c322c0d034afd24363d1ba1b720c2d098694758c243",
+    "evals/public_search.py": "26395b2000e58a6f7577704daae9bfd89bd0465760e0835db552f35ec9468c07",
+    "evals/reference_search.py": "255f11f2a6c21e74a644db5851f721e5ed816796e57d8b19cac11ccfa8980e97",
+    "uv.lock": "287ccb8db252d4d6b69b0035fdbed66428ac417962ed36478bee9e8647aef1b1"
+  },
+  "provider_endpoint": {
+    "requested_provider": "openai",
+    "advertised_model_version": "openai/gpt-5.6-luna-20260709",
+    "returned_models": [
+      "openai/gpt-5.6-luna"
+    ],
+    "source": "https://openrouter.ai/api/v1/models/openai/gpt-5.6-luna/endpoints"
+  },
+  "successes": 18,
+  "trials": 18,
+  "completed_trials": 18,
+  "case_errors": 0,
+  "inference_errors": 0,
+  "mean_mcp_calls": 1.3333333333333333,
+  "total_mcp_calls": 24,
+  "mean_response_bytes": 3722.1666666666665,
+  "input_tokens": 148356,
+  "output_tokens": 1851,
+  "tool_errors": 0,
+  "reported_inference_cost_usd": "0.00975878",
+  "trials_with_reported_cost": 18,
+  "cost_note": "Sum of returned per-response usage costs. All 18 trials reported usage. The connectivity smoke test is excluded; account counters may lag.",
+  "cases": [
+    {
+      "case": "search-exact-basename",
+      "successes": 3,
+      "trials": 3,
+      "inference_errors": 0
+    },
+    {
+      "case": "search-file-absence",
+      "successes": 3,
+      "trials": 3,
+      "inference_errors": 0
+    },
+    {
+      "case": "search-hidden-filter",
+      "successes": 3,
+      "trials": 3,
+      "inference_errors": 0
+    },
+    {
+      "case": "search-recursive-suffix",
+      "successes": 3,
+      "trials": 3,
+      "inference_errors": 0
+    },
+    {
+      "case": "search-word-lines",
+      "successes": 3,
+      "trials": 3,
+      "inference_errors": 0
+    },
+    {
+      "case": "search-log-set-difference",
+      "successes": 3,
+      "trials": 3,
+      "inference_errors": 0
+    }
+  ],
+  "failure_analysis": [],
+  "methodology_note": "One successful smoke preceded the fixed 18-trial run. No prompts, tools, fixtures, graders, or dependencies were tuned and no trials were discarded or rerun. The historical format-1 harness was used deliberately to match earlier experiments; its exact source and lockfile equality were checked against the original Nano revision. The current format-2 harness is preserved on main and requires new compatible reports for automated comparison."
+}
