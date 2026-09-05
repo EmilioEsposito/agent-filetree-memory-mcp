@@ -1,0 +1,91 @@
+{
+  "format_version": 1,
+  "experiment": "public-search-initial",
+  "scope": "Six adapted AgentBench-OS development tasks, three trials each. Not an official AgentBench score or an independent held-out benchmark.",
+  "created_at": "2026-09-05T15:24:35.517925+00:00",
+  "git_commit": "7c715190ecf485c43f56c29e7a01497d4a62c8a3",
+  "dirty": false,
+  "driver": "openrouter",
+  "model": "openai/gpt-5.4-nano",
+  "suite": "public-search",
+  "dataset_sha256": "c51653c76c1aaed5242734a4ff0161b9790c6765429bf7f1f362181df6f54c88",
+  "catalog_sha256": "951f02bcd006020f538f9d59eb6c1e5fe59345921a9d6ebcd9c835192c97e8cf",
+  "settings": {
+    "max_calls": 40,
+    "timeout": 180,
+    "repeat": 3,
+    "provider": "openai",
+    "max_tokens": 4096,
+    "reasoning_effort": "low"
+  },
+  "successes": 15,
+  "trials": 18,
+  "case_errors": 0,
+  "mean_mcp_calls": 1.2222222222222223,
+  "mean_response_bytes": 4640.388888888889,
+  "input_tokens": 147566,
+  "output_tokens": 4197,
+  "tool_errors": 0,
+  "observed_openrouter_key_usage_delta_usd": 0.01249362,
+  "cases": [
+    {
+      "case": "search-exact-basename",
+      "successes": 3,
+      "trials": 3,
+      "failed_answers": [],
+      "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/4/N37.json",
+      "record_pointer": ""
+    },
+    {
+      "case": "search-file-absence",
+      "successes": 3,
+      "trials": 3,
+      "failed_answers": [],
+      "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/4/N41.json",
+      "record_pointer": "/1"
+    },
+    {
+      "case": "search-hidden-filter",
+      "successes": 3,
+      "trials": 3,
+      "failed_answers": [],
+      "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/4/N11.json",
+      "record_pointer": ""
+    },
+    {
+      "case": "search-recursive-suffix",
+      "successes": 1,
+      "trials": 3,
+      "failed_answers": [
+        "{\"count\":148}",
+        "{\"count\":123}"
+      ],
+      "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/3/ac.json",
+      "record_pointer": "/2"
+    },
+    {
+      "case": "search-word-lines",
+      "successes": 2,
+      "trials": 3,
+      "failed_answers": [
+        "{\"count\":81}"
+      ],
+      "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/7/bootstrap.json",
+      "record_pointer": "/3"
+    },
+    {
+      "case": "search-log-set-difference",
+      "successes": 3,
+      "trials": 3,
+      "failed_answers": [],
+      "source_url": "https://github.com/THUDM/AgentBench/blob/d1e4a10db08c87075c78972e48ecc182be03e2d5/data/os_interaction/data/1/stock.json",
+      "record_pointer": "/4"
+    }
+  ],
+  "failure_analysis": [
+    "Two recursive-suffix trials answered 148 and 123 after a single nontruncated glob response containing exactly 124 paths.",
+    "One whole-word trial answered 81 after nontruncated grep responses containing 80 and 3 matching lines. Correct total: 83.",
+    "All three failures were incorrect final counts after complete correct retrieval; no runtime errors or tool errors occurred.",
+    "Fixtures, graders, and tool catalog stayed fixed throughout the run. No model trials were discarded or rerun after inspecting failures."
+  ]
+}
