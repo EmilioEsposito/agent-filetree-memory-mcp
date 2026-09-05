@@ -1,0 +1,170 @@
+{
+  "date": "2026-09-05",
+  "purpose": "Development comparison; not an independent benchmark",
+  "model": "openai/gpt-5.4-nano",
+  "provider": "openai",
+  "surfaces": {
+    "previous": {
+      "catalog_sha256": "174d82b40c2c6cf977e17757cd5d957f1f0c999af2dd58187fcbad43d9638288",
+      "successes": 26,
+      "trials": 30,
+      "mean_mcp_calls": 4.533333333333333,
+      "mean_serialized_result_bytes": 7341.7,
+      "input_tokens": 457848,
+      "output_tokens": 42283,
+      "per_case": {
+        "ambiguous-edit": {
+          "successes": 3,
+          "trials": 3
+        },
+        "append-once": {
+          "successes": 2,
+          "trials": 3
+        },
+        "create-note": {
+          "successes": 3,
+          "trials": 3
+        },
+        "cross-directory": {
+          "successes": 3,
+          "trials": 3
+        },
+        "find-decision": {
+          "successes": 3,
+          "trials": 3
+        },
+        "large-edit": {
+          "successes": 0,
+          "trials": 3
+        },
+        "literal-punctuation": {
+          "successes": 3,
+          "trials": 3
+        },
+        "read-tail": {
+          "successes": 3,
+          "trials": 3
+        },
+        "targeted-edit": {
+          "successes": 3,
+          "trials": 3
+        },
+        "unicode-preservation": {
+          "successes": 3,
+          "trials": 3
+        }
+      }
+    },
+    "selected": {
+      "catalog_sha256": "951f02bcd006020f538f9d59eb6c1e5fe59345921a9d6ebcd9c835192c97e8cf",
+      "successes": 30,
+      "trials": 30,
+      "mean_mcp_calls": 3.533333333333333,
+      "mean_serialized_result_bytes": 1914.4,
+      "input_tokens": 484073,
+      "output_tokens": 7303,
+      "per_case": {
+        "ambiguous-edit": {
+          "successes": 3,
+          "trials": 3
+        },
+        "append-once": {
+          "successes": 3,
+          "trials": 3
+        },
+        "create-note": {
+          "successes": 3,
+          "trials": 3
+        },
+        "cross-directory": {
+          "successes": 3,
+          "trials": 3
+        },
+        "find-decision": {
+          "successes": 3,
+          "trials": 3
+        },
+        "large-edit": {
+          "successes": 3,
+          "trials": 3
+        },
+        "literal-punctuation": {
+          "successes": 3,
+          "trials": 3
+        },
+        "read-tail": {
+          "successes": 3,
+          "trials": 3
+        },
+        "targeted-edit": {
+          "successes": 3,
+          "trials": 3
+        },
+        "unicode-preservation": {
+          "successes": 3,
+          "trials": 3
+        }
+      }
+    },
+    "shorter_descriptions": {
+      "catalog_sha256": "0a9316584ceb226c52d3ad43937ccb2b00c9af739ab5fb306c3601b2b51ed3ff",
+      "successes": 30,
+      "trials": 30,
+      "mean_mcp_calls": 3.6,
+      "mean_serialized_result_bytes": 3748.9666666666667,
+      "input_tokens": 515016,
+      "output_tokens": 7904,
+      "per_case": {
+        "ambiguous-edit": {
+          "successes": 3,
+          "trials": 3
+        },
+        "append-once": {
+          "successes": 3,
+          "trials": 3
+        },
+        "create-note": {
+          "successes": 3,
+          "trials": 3
+        },
+        "cross-directory": {
+          "successes": 3,
+          "trials": 3
+        },
+        "find-decision": {
+          "successes": 3,
+          "trials": 3
+        },
+        "large-edit": {
+          "successes": 3,
+          "trials": 3
+        },
+        "literal-punctuation": {
+          "successes": 3,
+          "trials": 3
+        },
+        "read-tail": {
+          "successes": 3,
+          "trials": 3
+        },
+        "targeted-edit": {
+          "successes": 3,
+          "trials": 3
+        },
+        "unicode-preservation": {
+          "successes": 3,
+          "trials": 3
+        }
+      }
+    }
+  },
+  "dataset_sha256": "f1d0c8278a677c2a8c0d98d815acb827e85aee4502a928812b1c94efcc5d2539",
+  "settings": {
+    "max_calls": 40,
+    "timeout": 180,
+    "repeat": 3,
+    "provider": "openai",
+    "max_tokens": 4096,
+    "reasoning_effort": "low"
+  }
+}

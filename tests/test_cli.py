@@ -213,6 +213,9 @@ async def test_runtime_composes_headless_server_without_database_connection(
         async with Client(runtime.server) as client:
             tool_names = {tool.name for tool in await client.list_tools()}
         assert tool_names == {
+            "memory_glob",
+            "memory_grep",
+            "memory_edit",
             "memory_list",
             "memory_read",
             "memory_history_list",

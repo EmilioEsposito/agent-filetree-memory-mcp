@@ -1,5 +1,8 @@
 .DS_Store
 .env
+# Local inference credentials and synthetic experiment transcripts.
+/eval-results/
+/.logfire/
 .env.*
 !.env.example
 /AGENTS.local.md

@@ -14,8 +14,10 @@ The project is designed around four boundaries:
 - PostgreSQL is injected through an async SQLAlchemy session factory. Standalone users may construct one from a static database URL; hosting platforms may supply their own credential-aware factory.
 - MCP is an adapter. The application service can also be embedded directly in another Python service.
 
-The headless tool surface is intentionally small: list, read, history-list,
-history-read, write, append, and delete. History metadata and historical content
+The headless tools support directory browsing, recursive filename and content
+search, paged reads, exact-text edits, history, writes, appends, and deletion.
+See the [tool contract](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/docs/tools.md) for parameters, limits, examples, and the
+0.6 upgrade notes. History metadata and historical content
 use separate capabilities. Writes use compare-and-swap versions and
 idempotency keys. Delete denies access immediately and makes encrypted data
 eligible for hard deletion after its configured retention window. The host must
@@ -25,6 +27,14 @@ run the packaged janitor; the request-serving process does not schedule cleanup 
 
 This project is an early alpha. APIs, migrations, and data formats may change
 before 1.0.
+
+## Development
+
+With uv installed and Docker running, `uv sync --locked` followed by
+`uv run python -m devtools.postgres` runs the complete test suite against a
+disposable PostgreSQL instance. No manually managed database is needed.
+The optional [agent eval harness](https://github.com/EmilioEsposito/agent-filetree-memory-mcp/blob/main/docs/evals.md) measures real model task success,
+tool usage, and saved state, with local reports and opt-in Logfire experiments.
 
 ## Installation
 

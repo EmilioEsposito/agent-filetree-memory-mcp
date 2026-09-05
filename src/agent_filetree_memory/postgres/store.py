@@ -915,6 +915,121 @@ class PostgresMemoryStore:
             )
             raise
 
+    async def edit(
+        self,
+        scope: Scope,
+        path: str,
+        old_text: str,
+        new_text: str,
+        *,
+        replace_all: bool,
+        max_content_bytes: int,
+        expected_version: int,
+        idempotency_key: str,
+        invocation_id: str,
+        principal_id: str | None = None,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
+    ) -> WriteResult:
+        normalized = self._normalize_path(path, allow_root=False)
+        old = self._validate_content(old_text)
+        new = self._validate_content(new_text)
+        if not old or not isinstance(replace_all, bool):
+            raise ValueError("invalid edit arguments")
+        if type(max_content_bytes) is not int or max_content_bytes < 1:
+            raise ValueError("max_content_bytes must be a positive integer")
+        self._validate_required_version(expected_version)
+        validate_opaque_id(idempotency_key, field="idempotency_key")
+        validate_opaque_id(invocation_id, field="invocation_id")
+        self._validate_optional_principal(principal_id)
+        co_authors = _validate_co_authors(co_authored_by)
+        validated_comment = _validate_change_comment(change_comment)
+        fingerprint_values: dict[str, object] = {
+            "path": normalized,
+            "old_sha256": hashlib.sha256(old).hexdigest(),
+            "new_sha256": hashlib.sha256(new).hexdigest(),
+            "replace_all": replace_all,
+            "max_content_bytes": max_content_bytes,
+            "expected_version": expected_version,
+        }
+        if co_authors:
+            fingerprint_values["co_authored_by"] = list(co_authors)
+        if validated_comment is not None:
+            fingerprint_values["change_comment"] = validated_comment
+        fingerprint = _fingerprint("edit", **fingerprint_values)
+        try:
+            await self._consume_rate(scope)
+            async with self.runtime.session() as session, session.begin():
+                await self._lock_scope(session, scope)
+                replay = await self._find_idempotency(
+                    session, scope, idempotency_key, fingerprint
+                )
+                if replay is not None:
+                    await self._audit(
+                        session,
+                        scope,
+                        "memory:write",
+                        "succeeded",
+                        invocation_id=invocation_id,
+                        principal_id=principal_id,
+                    )
+                    return WriteResult(
+                        path=normalized,
+                        version=int(replay.result["version"]),
+                        created=False,
+                        idempotent_replay=True,
+                    )
+                resolved = await self._resolve(session, scope, normalized, for_update=True)
+                if resolved is None or resolved["object_kind"] != "document":
+                    raise NotFoundOrDenied("memory object is unavailable")
+                if resolved["current_version"] != expected_version:
+                    raise VersionConflict("document version does not match")
+                current, _ = await self._load_current_payload(session, scope, resolved)
+                current, _, _, _ = _decode_document_payload(current)
+                from ..domain.text import replace_text
+
+                combined = replace_text(
+                    current.decode("utf-8"), old.decode("utf-8"), new.decode("utf-8"),
+                    replace_all=replace_all,
+                    max_bytes=min(max_content_bytes, self.config.max_document_bytes),
+                ).encode("utf-8")
+                result = await self._replace_document(
+                    session,
+                    scope,
+                    normalized,
+                    resolved,
+                    combined,
+                    committed_by_principal_id=principal_id,
+                    co_authored_by=co_authors,
+                    change_comment=validated_comment,
+                )
+                await self._store_idempotency(
+                    session,
+                    scope,
+                    idempotency_key,
+                    fingerprint,
+                    {"created": False, "version": result.version},
+                )
+                await self._audit(
+                    session,
+                    scope,
+                    "memory:write",
+                    "succeeded",
+                    invocation_id=invocation_id,
+                    principal_id=principal_id,
+                    object_id=resolved["object_id"],
+                )
+                return result
+        except Exception as exc:
+            await self._audit_failure(
+                scope,
+                "memory:write",
+                exc,
+                invocation_id=invocation_id,
+                principal_id=principal_id,
+            )
+            raise
+
     async def delete(
         self,
         scope: Scope,

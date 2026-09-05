@@ -42,20 +42,21 @@ metadata automatically. Then run:
 
 ```shell
 uv run --locked pytest
+uv run python -m devtools.postgres
 uv run --locked python -m build
 uvx --from twine twine check --strict dist/*
 ```
 
-Inspect the pending changes, commit them, and push the commit to `main`.
+Inspect the pending changes and merge the reviewed change after CI passes.
 
 ## Publish the production release
 
-The examples below use the repository's current version, `0.4.0`. Substitute
+The examples below use the repository's current version, `0.6.0`. Substitute
 the version being released on later runs.
 
 1. Confirm that CI passes on the commit to be released.
 2. Create a GitHub release for a tag named exactly `v<version>`; for version
-   `0.4.0`, the tag must be `v0.4.0`. Target the preflighted commit.
+   `0.6.0`, the tag must be `v0.6.0`. Target the preflighted commit.
 3. Publish the GitHub release. The workflow tests all supported Python
    versions, verifies that the tag and package versions match, builds and
    checks the artifacts, and enters the `pypi` environment.
@@ -68,7 +69,7 @@ the version being released on later runs.
 uv venv /tmp/agent-filetree-memory-pypi
 uv pip install \
   --python /tmp/agent-filetree-memory-pypi/bin/python \
-  'agent-filetree-memory-mcp[all]==0.4.0'
+  'agent-filetree-memory-mcp[all]==0.6.0'
 /tmp/agent-filetree-memory-pypi/bin/python -c \
   'import agent_filetree_memory; print(agent_filetree_memory.__version__)'
 ```

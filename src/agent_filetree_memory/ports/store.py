@@ -85,6 +85,25 @@ class MemoryStore(Protocol):
         change_comment: str | None = None,
     ) -> WriteResult: ...
 
+    async def edit(
+        self,
+        scope: Scope,
+        path: str,
+        old_text: str,
+        new_text: str,
+        *,
+        replace_all: bool,
+        expected_version: int,
+        idempotency_key: str,
+        invocation_id: str,
+        max_content_bytes: int,
+        principal_id: str | None = None,
+        co_authored_by: Sequence[str] = (),
+        change_comment: str | None = None,
+    ) -> WriteResult:
+        """Atomically check replay, CAS, match, and replace under the write lock."""
+        ...
+
     async def delete(
         self,
         scope: Scope,

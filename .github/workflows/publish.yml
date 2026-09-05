@@ -29,9 +29,24 @@ jobs:
       - name: Run tests
         run: uv run --locked pytest
 
+  integration:
+    name: PostgreSQL and eval harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked --group evals
+      - run: uv run python -m devtools.postgres
+      - run: uv run python -m devtools.postgres -- uv run --locked --group evals python -m evals.run --split all
+
   build:
     name: Build and validate distributions
-    needs: test
+    needs: [test, integration]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
