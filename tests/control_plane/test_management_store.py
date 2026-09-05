@@ -1213,4 +1213,3 @@ async def test_self_service_creation_invited_membership_and_atomic_quota() -> No
         finally:
             for slug in (shared, own, raced):
                 await _delete_workspace(sessions, slug)
-

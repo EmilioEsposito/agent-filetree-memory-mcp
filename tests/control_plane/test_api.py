@@ -361,4 +361,3 @@ def test_invalid_creation_capability_fails_closed():
     )
     with TestClient(app) as client:
         assert client.get("/me").status_code == 403
-
