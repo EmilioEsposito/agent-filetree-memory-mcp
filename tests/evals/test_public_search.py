@@ -14,9 +14,9 @@ from evals.graders import answer_is_correct, state_is_correct
 def test_suites_are_separate_and_provenance_is_pinned():
     original = scenarios()
     public = scenarios("public-search")
-    assert len(original) == 10 and len(public) == 6
-    assert len(scenarios("all")) == 16
-    assert len({c.name for c in scenarios("all")}) == 16
+    assert len(original) == 12 and len(public) == 6
+    assert len(scenarios("all")) == 18
+    assert len({c.name for c in scenarios("all")}) == 18
     for case in public:
         assert len(case.provenance["revision"]) == 40
         assert len(case.provenance["source_file_sha256"]) == 64

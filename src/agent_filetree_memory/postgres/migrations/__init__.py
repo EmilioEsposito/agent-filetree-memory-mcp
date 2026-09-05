@@ -10,11 +10,19 @@ from __future__ import annotations
 
 from importlib.resources import files
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 from alembic.config import Config
-from sqlalchemy import CheckConstraint, Column, MetaData, PrimaryKeyConstraint, String, Table
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    MetaData,
+    PrimaryKeyConstraint,
+    String,
+    Table,
+)
 
 from ..schema import DEFAULT_SCHEMA, tables_for_schema, validate_schema_name
 
@@ -22,6 +30,18 @@ SCHEMA_ATTRIBUTE = "agent_filetree_memory_schema"
 CONSTRAINT_NAMESPACE_ATTRIBUTE = (
     "agent_filetree_memory_control_plane_constraint_namespace"
 )
+
+
+def _validate_constraint_namespace(value: str) -> str:
+    # Historical revisions must not depend on the evolving control-plane models.
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[a-z][a-z0-9_]{0,30}", value) is None
+    ):
+        raise ValueError(
+            "constraint_namespace must be a lowercase SQL identifier fragment"
+        )
+    return value
 
 
 def package_version_location() -> Path:
@@ -49,12 +69,7 @@ def configure_host_alembic(
     """
 
     schema = validate_schema_name(schema)
-    from ...control_plane.namespace_store import namespace_tables_for_schema
-
-    namespace_tables_for_schema(
-        schema,
-        constraint_namespace=constraint_namespace,
-    )
+    constraint_namespace = _validate_constraint_namespace(constraint_namespace)
     config.attributes[SCHEMA_ATTRIBUTE] = schema
     config.attributes[CONSTRAINT_NAMESPACE_ATTRIBUTE] = constraint_namespace
     if append_version_location:
@@ -94,13 +109,7 @@ def constraint_namespace_from_config(config: Config | Any) -> str:
     """Resolve the control-plane constraint prefix selected by the host."""
 
     value = config.attributes.get(CONSTRAINT_NAMESPACE_ATTRIBUTE, "afm")
-    from ...control_plane.namespace_store import namespace_tables_for_schema
-
-    namespace_tables_for_schema(
-        schema_from_config(config),
-        constraint_namespace=value,
-    )
-    return value
+    return _validate_constraint_namespace(value)
 
 
 def migration_metadata(

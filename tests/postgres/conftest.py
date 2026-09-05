@@ -14,6 +14,7 @@ from agent_filetree_memory.postgres import (
     PostgresRuntime,
     PostgresStoreConfig,
 )
+from agent_filetree_memory.postgres.migrations.runner import upgrade_schema
 
 TEST_INDEX_KEY = b"test-only-idempotency-index-key-32"
 
@@ -34,7 +35,7 @@ async def postgres_runtime() -> AsyncIterator[PostgresRuntime]:
     assert runtime.engine is not None
     async with runtime.engine.begin() as connection:
         await connection.execute(text(f"CREATE SCHEMA {schema}"))
-        await connection.run_sync(runtime.tables.metadata.create_all)
+        await connection.run_sync(upgrade_schema, schema=schema)
     try:
         yield runtime
     finally:

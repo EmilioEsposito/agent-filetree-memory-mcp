@@ -49,6 +49,11 @@ uvx --from twine twine check --strict dist/*
 
 Inspect the pending changes and merge the reviewed change after CI passes.
 
+For schema changes, follow the [migration release contract](migrations.md#release-and-rollout-contract):
+ship a frozen revision, test upgrade with existing data, and document rollout
+compatibility and any required data transition. Hosts apply those revisions;
+they should not generate replacements in their own repositories.
+
 ## Publish the production release
 
 The examples below use the repository's current version, `0.6.0`. Substitute
