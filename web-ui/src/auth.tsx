@@ -87,8 +87,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         managerRef.current = manager;
         const params = new URLSearchParams(window.location.search);
         let current: User | null;
-        if (params.has("code") && params.has("state")) {
-          current = await manager.signinRedirectCallback();
+        if (params.has("state") && (params.has("code") || params.has("error"))) {
+          try {
+            current = await manager.signinRedirectCallback();
+          } catch (caught) {
+            // Consume error callbacks too, and keep stale OAuth parameters out of retries.
+            window.history.replaceState(null, "", root);
+            throw caught;
+          }
           const returnSearch =
             typeof current.state === "string" ? current.state : "";
           window.history.replaceState(
