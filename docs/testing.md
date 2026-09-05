@@ -2,6 +2,17 @@
 
 The security contract requires more than a happy-path unit test.
 
+## Local commands
+
+`uv sync --locked` installs development dependencies. `uv run --locked pytest`
+runs tests that need no external service. With Docker running,
+`uv run python -m devtools.postgres` provisions a disposable PostgreSQL instance
+and runs the complete suite, including integration tests. It removes the
+container afterward. No database URL or password needs to be copied manually.
+
+See [agent evals](evals.md) for the separate, optional LLM evaluation workflow,
+state graders, comparison reports, and Logfire integration.
+
 ## Unit tests
 
 - Capability signature, issuer, audience, expiry, action, and delegation-depth enforcement
