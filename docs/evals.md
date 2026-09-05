@@ -159,20 +159,32 @@ A [GLM 5.3 Flash run](../evals/results/public-search-glm-flash.json) on the same
 date used the identical dataset, catalog, and limits, replacing the model with
 `z-ai/glm-5.3-flash` and provider with `deepinfra` (its FP4 deployment).
 
-| Metric, 18 attempted trials | GPT-5.4-nano | GLM 5.3 Flash |
-| --- | ---: | ---: |
-| Successful trials | 15/18 | 15/18 |
-| Inference errors | 0 | 1 |
-| MCP calls, total | 22 | 32 |
-| Input tokens, total | 147,566 | 245,085 |
-| Output tokens, total | 4,197 | 2,445 |
-| Reported inference cost | $0.0171 | $0.0175 |
+The [GPT-5.6 Luna run](../evals/results/public-search-luna.json), also on September
+5, used `--model openai/gpt-5.6-luna --provider openai` with the same three trials
+per case and low reasoning. It passed all 18 trials, including all suffix-count
+and word-count trials, with no inference, tool, or answer-format errors.
+
+| Metric, 18 attempted trials | GPT-5.4-nano | GLM 5.3 Flash | GPT-5.6 Luna |
+| --- | ---: | ---: | ---: |
+| Successful trials | 15/18 | 15/18 | 18/18 |
+| Inference errors | 0 | 1 | 0 |
+| MCP calls, total | 22 | 32 | 24 |
+| Input tokens, total | 147,566 | 245,085 | 148,356 |
+| Output tokens, total | 4,197 | 2,445 | 1,851 |
+| Reported inference cost | $0.0171 | $0.0175 | $0.0098 |
+
+These three experiments used the same historical format-1 harness. Luna's source
+and lockfile equality with the original Nano revision was verified; its aggregate
+records file hashes and the exact revision. The newer format-2 reporting and
+migration setup on `main` remain the contributor default. Recreate compatible
+reports with that harness before using `evals.compare` for a new tool experiment.
 
 GLM had one provider 429 before any tool call, one incorrect count (122 versus
 124), and one correct count with extra prose that violated the JSON-only answer
 contract. The provider error stays in the denominator; formatting and factual
-errors remain distinct. No failed trials were replaced. This small sample does
-not establish a model winner. It also illustrates why cheaper per-token pricing
+errors remain distinct. No failed trials were replaced. Luna had the best result
+in this small sample; 18/18 does not establish general reliability. The comparison
+also illustrates why cheaper per-token pricing
 does not guarantee a cheaper task run. Costs sum returned response usage,
 excluding smoke probes; the rejected GLM trial reported no usage. Nano's earlier
 $0.0125 account-counter observation lagged; the result file retains both values.
