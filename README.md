@@ -110,13 +110,14 @@ See [docs/management-ui.md](https://github.com/EmilioEsposito/agent-filetree-mem
 administrative UI with a host-supplied identity dependency.
 
 The optional control plane is provider-neutral. Hosts inject verified
-principals, including a platform-administrator boolean, and may inject an
+principals, including separate workspace-creation and platform-administrator permissions, and may inject an
 external workspace-entitlement resolver. Platform administrators can inventory
 workspace metadata and create workspaces, but must explicitly take a workspace
 role before agent slugs become visible. Workspace administration and explicit
 agent management never imply content access or decryption. An agent may be
 explicitly shared read-only with its workspace; individual grants still control
-editing and deletion.
+editing and deletion. Eligible users create workspaces as owners, invite teammates, and
+create agent memories. Joined workspaces do not consume their creation quota.
 
 ## License
 

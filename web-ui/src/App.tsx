@@ -41,6 +41,7 @@ import {
   createAgent,
   createWorkspace,
   deleteMemoryDocument,
+  ensurePersonalWorkspace,
   inviteMember,
   joinWorkspace,
   loadAgentAccess,
@@ -79,6 +80,11 @@ import type {
   WorkspaceRole,
   WorkspaceSummary,
 } from "./types";
+
+function workspaceName(slug: string): string {
+  // Automatically provisioned names retain a unique URL slug, without personal data.
+  return /^personal-[a-f0-9]{32}$/.test(slug) ? "Personal" : slug;
+}
 
 const CONTAINER = "mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-8";
 
@@ -296,6 +302,7 @@ function AgentMemoryManager() {
   );
   const workspaceAdmin = selectedWorkspace?.role === "owner" || selectedWorkspace?.role === "admin";
   const workspaceOwner = selectedWorkspace?.role === "owner";
+  const canCreateWorkspace = me?.can_create_workspaces ?? me?.is_platform_admin ?? false;
   const canCreateAgent = selectedWorkspace?.can_create_agents ?? false;
   const canWrite = selectedAgent?.content_role === "editor" || selectedAgent?.content_role === "full_access";
   const canDelete = selectedAgent?.content_role === "full_access";
@@ -412,17 +419,27 @@ function AgentMemoryManager() {
       setLoading(true);
       setError("");
       try {
-        const [principal, nextWorkspaces] = await Promise.all([
+        let [principal, nextWorkspaces] = await Promise.all([
           loadMe(getToken),
           loadWorkspaces(getToken),
         ]);
         if (cancelled) return;
+        let personalSlug = "";
+        if (principal.auto_create_personal_workspace) {
+          const provisioned = await ensurePersonalWorkspace(getToken);
+          personalSlug = provisioned.workspace?.slug ?? "";
+          [principal, nextWorkspaces] = await Promise.all([
+            loadMe(getToken),
+            loadWorkspaces(getToken),
+          ]);
+          if (cancelled) return;
+        }
         setMe(principal);
         setWorkspaces(nextWorkspaces);
         const requested = searchParams.get("workspace");
         const chosen = nextWorkspaces.some((item) => item.slug === requested)
           ? requested!
-          : nextWorkspaces[0]?.slug ?? "";
+          : personalSlug || nextWorkspaces[0]?.slug || "";
         setSelectedWorkspaceSlug(chosen);
       } catch (caught) {
         if (!cancelled) fail(caught);
@@ -565,6 +582,7 @@ function AgentMemoryManager() {
           newWorkspaceAgentCreation,
         );
         await refreshWorkspaces();
+        setMe(await loadMe(getToken));
         setWorkspaceSlugInput("");
         setSelectedWorkspaceSlug(slug);
         setSelectedAgentSlug("");
@@ -963,6 +981,63 @@ function AgentMemoryManager() {
     }
   }
 
+  const workspaceMembersPanel = (
+    <MembersPanel
+                    members={members}
+                    invitations={invitations}
+                    currentPrincipalId={me?.principal_id ?? ""}
+                    owner={Boolean(workspaceOwner)}
+                    inviteEmail={inviteEmail}
+                    inviteRole={inviteRole}
+                    busy={busy}
+                    onInviteEmail={setInviteEmail}
+                    onInviteRole={setInviteRole}
+                    onInvite={() => void handleInvite()}
+                    onRevoke={(invitation) => {
+                      void runMutation(
+                        `invite-revoke-${invitation.invitation_id}`,
+                        async () => {
+                          await revokeInvitation(getToken, selectedWorkspaceSlug, invitation.invitation_id);
+                          await Promise.all([refreshMembers(selectedWorkspaceSlug), refreshAudit(selectedWorkspaceSlug)]);
+                        },
+                        `Invitation for ${invitation.email} revoked.`,
+                      ).catch(() => undefined);
+                    }}
+                    onRole={(member, role) => {
+                      void runMutation(
+                        `member-role-${member.principal_id}`,
+                        async () => {
+                          await updateMemberRole(getToken, selectedWorkspaceSlug, member.principal_id, role);
+                          await Promise.all([refreshMembers(selectedWorkspaceSlug), refreshWorkspaces(), refreshAudit(selectedWorkspaceSlug)]);
+                        },
+                        `${principalLabel(member)} is now a workspace ${role}.`,
+                      ).catch(() => undefined);
+                    }}
+                    onTransfer={(member) => {
+                      if (!window.confirm(`Transfer workspace ownership to ${principalLabel(member)}? You will become an administrator.`)) return;
+                      void runMutation(
+                        `member-transfer-${member.principal_id}`,
+                        async () => {
+                          await transferWorkspaceOwnership(getToken, selectedWorkspaceSlug, member.principal_id);
+                          await Promise.all([refreshMembers(selectedWorkspaceSlug), refreshWorkspaces(), refreshAudit(selectedWorkspaceSlug)]);
+                        },
+                        `Workspace ownership transferred to ${principalLabel(member)}.`,
+                      ).catch(() => undefined);
+                    }}
+                    onRemove={(member) => {
+                      if (!window.confirm(`Remove ${principalLabel(member)} from this workspace? Their agent grants will also be removed.`)) return;
+                      void runMutation(
+                        `member-remove-${member.principal_id}`,
+                        async () => {
+                          await removeMember(getToken, selectedWorkspaceSlug, member.principal_id);
+                          await Promise.all([refreshMembers(selectedWorkspaceSlug), refreshWorkspaces(), (selectedAgentSlug ? refreshAgentAccess(selectedWorkspaceSlug, selectedAgentSlug) : Promise.resolve()), refreshAudit(selectedWorkspaceSlug)]);
+                        },
+                        `${principalLabel(member)} removed from the workspace.`,
+                      ).catch(() => undefined);
+                    }}
+                  />
+  );
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-950">
@@ -1036,7 +1111,8 @@ function AgentMemoryManager() {
                   }}
                   className={`mb-1 w-full rounded-lg px-3 py-2 text-left transition ${selectedWorkspaceSlug === workspace.slug ? "bg-blue-50 text-blue-800 dark:bg-blue-950/50 dark:text-blue-200" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
                 >
-                  <div className="truncate text-sm font-medium">{workspace.slug}</div>
+                  <div className="truncate text-sm font-medium">{workspaceName(workspace.slug)}</div>
+                  {workspaceName(workspace.slug) !== workspace.slug && <div className="truncate text-xs text-gray-500">{workspace.slug}</div>}
                   <div className="mt-1 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
                     <span>{workspace.agent_count} agents</span>
                     <span>{workspaceRoleLabel(workspace.role)}</span>
@@ -1075,6 +1151,9 @@ function AgentMemoryManager() {
                 )}
                 {workspaceAdmin && (
                   <div className="space-y-2 border-t border-gray-200 pt-3 dark:border-gray-800">
+                    <button className={`${BUTTON} w-full bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-200`} onClick={() => setTab("members")}><Users className="h-4 w-4" /> Manage teammates</button>
+                    <details className="space-y-2">
+                      <summary className="cursor-pointer py-1 font-medium text-gray-500">Workspace settings</summary>
                     <label className="block font-medium text-gray-500">Admission policy</label>
                     <select className={INPUT} value={policyAdmissionDraft} onChange={(event) => setPolicyAdmissionDraft(event.target.value as WorkspaceAdmissionPolicy)}>
                       <option value="invite_only">Invite only</option>
@@ -1089,14 +1168,18 @@ function AgentMemoryManager() {
                     <button className={`${BUTTON} w-full bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200`} disabled={busy === "workspace-policy"} onClick={() => void handlePolicySave()}>
                       {busy === "workspace-policy" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save policies
                     </button>
+                    </details>
                   </div>
                 )}
               </div>
             )}
-            {me?.is_platform_admin && (
+            {canCreateWorkspace && (
               <div className="space-y-2 border-t border-gray-200 p-3 dark:border-gray-800">
-                <label className="block text-xs font-medium text-gray-500">Create workspace</label>
-                <input className={INPUT} value={workspaceSlugInput} onChange={(event) => setWorkspaceSlugInput(event.target.value)} placeholder="workspace-slug" />
+                <label htmlFor="workspace-slug" className="block text-xs font-medium text-gray-500">Workspace name</label>
+                <p className="text-xs text-gray-500">Create your own workspace, then add an agent memory and invite teammates. Joining other workspaces does not use your creation allowance.</p>
+                <input id="workspace-slug" aria-describedby="workspace-name-help" maxLength={63} className={INPUT} value={workspaceSlugInput} onChange={(event) => setWorkspaceSlugInput(event.target.value)} placeholder="my-workspace" />
+                <p id="workspace-name-help" className="text-xs text-gray-500">Use lowercase letters, numbers, and hyphens. This name becomes part of your connection URL.</p>
+                <details className="text-xs text-gray-500"><summary className="cursor-pointer py-1">Workspace settings</summary>
                 <select aria-label="New workspace admission policy" className={INPUT} value={newWorkspaceAdmission} onChange={(event) => setNewWorkspaceAdmission(event.target.value as WorkspaceAdmissionPolicy)}>
                   <option value="invite_only">Invite only</option>
                   <option value="all_authenticated">All authenticated users</option>
@@ -1106,10 +1189,20 @@ function AgentMemoryManager() {
                   <option value="admins_only">Administrators create agents</option>
                   <option value="all_members">All members create agents</option>
                 </select>
+                </details>
+                <p className="text-xs text-gray-500">You will be the owner. New workspaces are invite-only by default.</p>
                 <button aria-label="Create workspace" className={`${BUTTON} w-full bg-blue-600 text-white hover:bg-blue-700`} disabled={!workspaceSlugInput.trim() || busy === "workspace-create"} onClick={() => void handleCreateWorkspace()}>
                   {busy === "workspace-create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Create workspace
                 </button>
               </div>
+            )}
+            {me?.workspace_creation_restriction === "quota" && (
+              <p className="border-t border-gray-200 p-3 text-xs text-gray-500 dark:border-gray-800" role="status">
+                You have created {me.created_workspace_count} of {me.workspace_creation_limit} available workspaces. You can still join workspaces you are invited to.
+              </p>
+            )}
+            {me?.workspace_creation_restriction === "policy" && (
+              <p className="border-t border-gray-200 p-3 text-xs text-gray-500 dark:border-gray-800">Workspace creation is restricted by this deployment. You can still join a workspace by invitation.</p>
             )}
           </aside>
 
@@ -1143,23 +1236,31 @@ function AgentMemoryManager() {
             </div>
             {canCreateAgent && (
               <div className="space-y-2 border-t border-gray-200 p-3 dark:border-gray-800">
-                <label className="block text-xs font-medium text-gray-500">Create agent</label>
-                <input className={INPUT} value={agentSlugInput} onChange={(event) => setAgentSlugInput(event.target.value)} placeholder="agent-slug" />
-                <input className={INPUT} value={agentAliasInput} onChange={(event) => setAgentAliasInput(event.target.value)} placeholder="Display name (optional)" />
+                <label htmlFor="agent-slug" className="block text-xs font-medium text-gray-500">Agent memory name</label>
+                <input id="agent-slug" maxLength={63} className={INPUT} value={agentSlugInput} onChange={(event) => setAgentSlugInput(event.target.value)} placeholder="my-assistant" />
+                <input aria-label="Agent display name" className={INPUT} value={agentAliasInput} onChange={(event) => setAgentAliasInput(event.target.value)} placeholder="Display name (optional)" />
                 <button className={`${BUTTON} w-full bg-blue-600 text-white hover:bg-blue-700`} disabled={!agentSlugInput.trim() || busy === "agent-create"} onClick={() => void handleCreateAgent()}>
                   {busy === "agent-create" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Create agent
                 </button>
-                <p className="text-xs text-gray-500">You will receive explicit management authority and full memory access.</p>
+                <p className="text-xs text-gray-500">You will be able to manage this agent and read and edit its memory.</p>
               </div>
             )}
           </aside>
 
-          <section className={`${PANEL} min-h-[640px] overflow-hidden`}>
-            {!selectedAgent ? (
+          <section className={`${PANEL} ${selectedAgent ? "min-h-[640px]" : "min-h-[240px]"} overflow-hidden`}>
+            {tab === "members" && workspaceAdmin ? (
+              <>
+                <div className="flex items-center justify-between gap-3 border-b border-gray-200 p-5 dark:border-gray-800">
+                  <h2 className="font-semibold">{workspaceName(selectedWorkspaceSlug)} teammates</h2>
+                  <button className={`${BUTTON} bg-gray-100 dark:bg-gray-800`} onClick={() => setTab("memory")}>Back to memory</button>
+                </div>
+                {workspaceMembersPanel}
+              </>
+            ) : !selectedAgent ? (
               <EmptyState
                 icon={selectedWorkspace && !selectedWorkspace.role ? <LockKeyhole className="h-7 w-7" /> : <Bot className="h-7 w-7" />}
-                title={selectedWorkspace && !selectedWorkspace.role ? "Join this workspace to see agents" : "Select an agent"}
-                body={selectedWorkspace && !selectedWorkspace.role ? "Platform-wide inventory includes workspace metadata only. Agent names remain hidden until you explicitly join or assign yourself a workspace role." : "Choose an agent namespace, or create one when workspace policy allows it."}
+                title={selectedWorkspace && !selectedWorkspace.role ? "Join this workspace to see agents" : !selectedWorkspace ? (canCreateWorkspace ? "Create your first workspace" : "Your workspaces") : canCreateAgent && agents.length === 0 ? "Create your first agent memory" : "Select an agent"}
+                body={selectedWorkspace && !selectedWorkspace.role ? "Platform-wide inventory includes workspace metadata only. Agent names remain hidden until you explicitly join or assign yourself a workspace role." : !selectedWorkspace ? (canCreateWorkspace ? "A workspace groups your agents and teammates. Start with the Create workspace form." : "Workspaces you join will appear here.") : canCreateAgent && agents.length === 0 ? "Name your agent using the Create agent form. Then add a memory document or connect your agent through MCP." : "Choose an agent memory to get started."}
               />
             ) : (
               <>
@@ -1285,62 +1386,7 @@ function AgentMemoryManager() {
                   />
                 )}
 
-                {tab === "members" && workspaceAdmin && (
-                  <MembersPanel
-                    members={members}
-                    invitations={invitations}
-                    currentPrincipalId={me?.principal_id ?? ""}
-                    owner={Boolean(workspaceOwner)}
-                    inviteEmail={inviteEmail}
-                    inviteRole={inviteRole}
-                    busy={busy}
-                    onInviteEmail={setInviteEmail}
-                    onInviteRole={setInviteRole}
-                    onInvite={() => void handleInvite()}
-                    onRevoke={(invitation) => {
-                      void runMutation(
-                        `invite-revoke-${invitation.invitation_id}`,
-                        async () => {
-                          await revokeInvitation(getToken, selectedWorkspaceSlug, invitation.invitation_id);
-                          await Promise.all([refreshMembers(selectedWorkspaceSlug), refreshAudit(selectedWorkspaceSlug)]);
-                        },
-                        `Invitation for ${invitation.email} revoked.`,
-                      ).catch(() => undefined);
-                    }}
-                    onRole={(member, role) => {
-                      void runMutation(
-                        `member-role-${member.principal_id}`,
-                        async () => {
-                          await updateMemberRole(getToken, selectedWorkspaceSlug, member.principal_id, role);
-                          await Promise.all([refreshMembers(selectedWorkspaceSlug), refreshWorkspaces(), refreshAudit(selectedWorkspaceSlug)]);
-                        },
-                        `${principalLabel(member)} is now a workspace ${role}.`,
-                      ).catch(() => undefined);
-                    }}
-                    onTransfer={(member) => {
-                      if (!window.confirm(`Transfer workspace ownership to ${principalLabel(member)}? You will become an administrator.`)) return;
-                      void runMutation(
-                        `member-transfer-${member.principal_id}`,
-                        async () => {
-                          await transferWorkspaceOwnership(getToken, selectedWorkspaceSlug, member.principal_id);
-                          await Promise.all([refreshMembers(selectedWorkspaceSlug), refreshWorkspaces(), refreshAudit(selectedWorkspaceSlug)]);
-                        },
-                        `Workspace ownership transferred to ${principalLabel(member)}.`,
-                      ).catch(() => undefined);
-                    }}
-                    onRemove={(member) => {
-                      if (!window.confirm(`Remove ${principalLabel(member)} from this workspace? Their agent grants will also be removed.`)) return;
-                      void runMutation(
-                        `member-remove-${member.principal_id}`,
-                        async () => {
-                          await removeMember(getToken, selectedWorkspaceSlug, member.principal_id);
-                          await Promise.all([refreshMembers(selectedWorkspaceSlug), refreshWorkspaces(), refreshAgentAccess(selectedWorkspaceSlug, selectedAgentSlug), refreshAudit(selectedWorkspaceSlug)]);
-                        },
-                        `${principalLabel(member)} removed from the workspace.`,
-                      ).catch(() => undefined);
-                    }}
-                  />
-                )}
+
 
                 {tab === "audit" && workspaceAdmin && <AuditPanel events={audit} members={members} onRefresh={() => void refreshAudit(selectedWorkspaceSlug).catch(fail)} />}
               </>
@@ -1696,8 +1742,9 @@ function MembersPanel({ members, invitations, currentPrincipalId, owner, inviteE
       <div>
         <h3 className="font-semibold">Add a workspace member</h3>
         <p className="mt-1 text-sm text-gray-500">Membership does not grant private memory access. Members can read only stores that are explicitly shared workspace-wide or granted to them individually.</p>
+        <p className="mt-2 text-sm text-gray-500">Existing accounts are added immediately. New teammates get access when they sign in with the invited email. Share this app’s link with them; no invitation email is sent.</p>
         <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_140px_auto]">
-          <input className={INPUT} type="email" value={inviteEmail} onChange={(event) => onInviteEmail(event.target.value)} placeholder="person@example.com" />
+          <input aria-label="Teammate email" className={INPUT} type="email" value={inviteEmail} onChange={(event) => onInviteEmail(event.target.value)} placeholder="person@example.com" />
           <select className={INPUT} value={inviteRole} onChange={(event) => onInviteRole(event.target.value as "admin" | "member")}><option value="member">Member</option>{owner && <option value="admin">Administrator</option>}</select>
           <button className={`${BUTTON} bg-blue-600 text-white hover:bg-blue-700`} disabled={!inviteEmail.trim() || busy === "member-invite"} onClick={onInvite}><UserPlus className="h-4 w-4" /> Add</button>
         </div>

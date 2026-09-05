@@ -73,6 +73,14 @@ export async function loadWorkspaces(getIdToken: TokenGetter) {
   return result.workspaces;
 }
 
+export function ensurePersonalWorkspace(getIdToken: TokenGetter) {
+  return memoryApi<{ workspace: WorkspaceSummary | null }>(
+    getIdToken,
+    "/onboarding/personal-workspace",
+    { method: "POST" },
+  );
+}
+
 export function createWorkspace(
   getIdToken: TokenGetter,
   slug: string,

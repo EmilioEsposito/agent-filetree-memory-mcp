@@ -53,6 +53,9 @@ class ManagementPrincipal:
     email: str
     display_name: str
     is_platform_admin: bool = False
+    # Trusted host policy: permission to create an owned workspace, never global administration.
+    can_create_workspaces: bool = False
+    auto_create_personal_workspace: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,7 +277,11 @@ def create_management_api(
     ) -> ManagementPrincipal:
         if not isinstance(principal, ManagementPrincipal):
             raise AuthorizationDenied("management authentication is invalid")
-        if not isinstance(principal.is_platform_admin, bool):
+        if not all(isinstance(value, bool) for value in (
+            principal.is_platform_admin,
+            principal.can_create_workspaces,
+            principal.auto_create_personal_workspace,
+        )):
             raise AuthorizationDenied("management authentication is invalid")
         profile = await management_store.register_principal(
             principal_id=principal.principal_id,
@@ -396,11 +403,24 @@ def create_management_api(
     async def me(
         principal: ManagementPrincipal = Depends(current_principal),
     ):
+        created, limit = await management_store.workspace_creation_usage(
+            principal_id=principal.principal_id,
+        )
+        permitted = principal.is_platform_admin or principal.can_create_workspaces
         return {
             "principal_id": principal.principal_id,
             "email": principal.email,
             "display_name": principal.display_name,
             "is_platform_admin": principal.is_platform_admin,
+            "can_create_workspaces": permitted and created < limit,
+            "auto_create_personal_workspace": (
+                principal.auto_create_personal_workspace and permitted and created == 0 and limit > 0
+            ),
+            "workspace_creation_restriction": (
+                "policy" if not permitted else "quota" if created >= limit else None
+            ),
+            "created_workspace_count": created,
+            "workspace_creation_limit": limit,
             "allow_admin_self_grant": allow_admin_self_grant,
         }
 
@@ -435,11 +455,26 @@ def create_management_api(
         )
         return {"workspaces": [_workspace_payload(item) for item in items]}
 
+    @app.post("/onboarding/personal-workspace")
+    async def provision_personal_workspace(
+        principal: ManagementPrincipal = Depends(current_principal),
+    ):
+        if not principal.auto_create_personal_workspace:
+            raise AuthorizationDenied("Automatic workspace creation is disabled")
+        item = await management_store.ensure_personal_workspace(
+            principal_id=principal.principal_id,
+            is_platform_admin=principal.is_platform_admin,
+            can_create_workspaces=principal.can_create_workspaces,
+        )
+        return {"workspace": _workspace_payload(item) if item else None}
+
     @app.post("/workspaces", status_code=201)
     async def create_workspace(
         body: CreateWorkspaceRequest,
         principal: ManagementPrincipal = Depends(current_principal),
     ):
+        if not (principal.is_platform_admin or principal.can_create_workspaces):
+            raise AuthorizationDenied("Workspace creation is restricted by this deployment")
         item = await management_store.create_workspace(
             principal_id=principal.principal_id,
             workspace_slug=body.slug,
@@ -450,6 +485,7 @@ def create_management_api(
                 body.agent_creation_policy
             ),
             is_platform_admin=principal.is_platform_admin,
+            can_create_workspaces=principal.can_create_workspaces,
         )
         return _workspace_payload(item)
 

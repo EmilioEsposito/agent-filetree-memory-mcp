@@ -1143,6 +1143,25 @@ class ManagementStore:
             ):
                 raise AuthorizationDenied(_AUTHORIZATION_DENIED)
 
+    async def workspace_creation_usage(self, *, principal_id: str) -> tuple[int, int]:
+        """Creator quota, independent of joined workspaces or later ownership transfers.
+
+        This is advisory UI state. Creation rechecks the same count under the principal's
+        provisioning lock, so parallel requests cannot spend the same remaining allowance.
+        """
+        validate_opaque_id(principal_id, field="principal_id")
+        async with self._session_factory() as session:
+            count = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(self._tables.workspaces)
+                    .where(
+                        self._tables.workspaces.c.created_by_principal_id == principal_id
+                    )
+                )
+            ).scalar_one()
+        return count, self._max_workspaces_per_principal
+
     async def create_workspace(
         self,
         *,
@@ -1155,8 +1174,56 @@ class ManagementStore:
             WorkspaceAgentCreationPolicy.ADMINS_ONLY
         ),
         is_platform_admin: bool = False,
+        can_create_workspaces: bool = False,
     ) -> WorkspaceSummary:
-        if is_platform_admin is not True:
+        item = await self._create_workspace(
+            principal_id=principal_id,
+            workspace_slug=workspace_slug,
+            admission_policy=admission_policy,
+            agent_creation_policy=agent_creation_policy,
+            is_platform_admin=is_platform_admin,
+            can_create_workspaces=can_create_workspaces,
+        )
+        assert item is not None
+        return item
+
+    async def ensure_personal_workspace(
+        self,
+        *,
+        principal_id: str,
+        is_platform_admin: bool = False,
+        can_create_workspaces: bool = False,
+    ) -> WorkspaceSummary | None:
+        """Provision the first created workspace once, regardless of invited memberships.
+
+        Returns the new workspace, or None if this principal has created any workspace
+        already. The creator lock also serializes manual creation and ownership transfers
+        never replenish this allowance. A random suffix avoids exposing email or identity.
+        """
+        return await self._create_workspace(
+            principal_id=principal_id,
+            workspace_slug=f"personal-{uuid4().hex}",
+            is_platform_admin=is_platform_admin,
+            can_create_workspaces=can_create_workspaces,
+            only_if_first=True,
+        )
+
+    async def _create_workspace(
+        self,
+        *,
+        principal_id: str,
+        workspace_slug: str,
+        admission_policy: WorkspaceAdmissionPolicy = (
+            WorkspaceAdmissionPolicy.INVITE_ONLY
+        ),
+        agent_creation_policy: WorkspaceAgentCreationPolicy = (
+            WorkspaceAgentCreationPolicy.ADMINS_ONLY
+        ),
+        is_platform_admin: bool = False,
+        can_create_workspaces: bool = False,
+        only_if_first: bool = False,
+    ) -> WorkspaceSummary | None:
+        if is_platform_admin is not True and can_create_workspaces is not True:
             raise AuthorizationDenied(_AUTHORIZATION_DENIED)
         try:
             admission_policy = WorkspaceAdmissionPolicy(admission_policy)
@@ -1201,6 +1268,8 @@ class ManagementStore:
                     )
                 )
             ).scalar_one()
+            if only_if_first and count > 0:
+                return None
             if count >= self._max_workspaces_per_principal:
                 raise ManagementConflict("workspace limit reached")
             workspace_id = uuid4().hex
@@ -1244,7 +1313,7 @@ class ManagementStore:
             )
         summaries = await self.list_workspaces(
             principal_id=principal_id,
-            is_platform_admin=True,
+            is_platform_admin=is_platform_admin,
         )
         return next(item for item in summaries if item.slug == workspace_slug)
 
