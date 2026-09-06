@@ -1,4 +1,4 @@
-export type AuthMode = "none" | "session" | "oidc";
+export type AuthMode = "none" | "session" | "oidc" | "adapter";
 
 export interface FrontendAuthConfig {
   mode: AuthMode;
@@ -7,6 +7,8 @@ export interface FrontendAuthConfig {
   scope: string;
   token_field: "id_token" | "access_token";
   auto_login: boolean;
+  adapter_url?: string | null;
+  adapter_config?: Record<string, unknown>;
 }
 
 export interface RuntimeConfig {
@@ -29,7 +31,7 @@ function validate(config: RuntimeConfig): RuntimeConfig {
   ) {
     throw new Error("UI configuration is incomplete.");
   }
-  if (!["none", "session", "oidc"].includes(config.auth.mode)) {
+  if (!["none", "session", "oidc", "adapter"].includes(config.auth.mode)) {
     throw new Error("UI authentication mode is invalid.");
   }
   return config;
@@ -70,4 +72,12 @@ export function mcpConnectionUrl(
 
 export function uiRootUrl(): URL {
   return new URL("./", CONFIG_URL);
+}
+
+export function authAdapterUrl(config: RuntimeConfig): URL {
+  const url = new URL(config.auth.adapter_url ?? "", CONFIG_URL);
+  if (!config.auth.adapter_url || url.origin !== CONFIG_URL.origin) {
+    throw new Error("The authentication adapter must be served by this app.");
+  }
+  return url;
 }
