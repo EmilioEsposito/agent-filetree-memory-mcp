@@ -3,7 +3,9 @@
 The `web` extra ships a prebuilt React interface in the Python wheel. End users
 do not need Node or Vite. The same package version supplies the management API,
 static assets, and route composition helpers, which prevents frontend/backend
-version drift.
+version drift. HTML responses require cache revalidation so a deployment cannot pair a
+heuristically cached old bundle with fresh runtime configuration. Fingerprinted assets retain
+their normal static-file caching.
 
 ```shell
 uv add 'agent-filetree-memory-mcp[web,mcp]'

@@ -29,6 +29,8 @@ def test_packaged_frontend_serves_config_html_and_safe_spa_fallback() -> None:
 
     assert root.status_code == 200
     assert deep_link.status_code == 200
+    assert root.headers["cache-control"] == "no-cache"
+    assert deep_link.headers["cache-control"] == "no-cache"
     assert "<div id=\"root\"></div>" in root.text
     assert missing_asset.status_code == 404
     assert missing_asset.headers["content-type"].startswith("application/json")

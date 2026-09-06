@@ -145,6 +145,14 @@ class _SecurityHeadersMiddleware:
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
+                if any(
+                    name.lower() == b"content-type" and value.startswith(b"text/html")
+                    for name, value in headers
+                ):
+                    # HTML selects the version-matched JS bundle. Browser heuristic caching
+                    # can otherwise combine an old bundle with fresh runtime auth config.
+                    headers = [(name, value) for name, value in headers if name.lower() != b"cache-control"]
+                    headers.append((b"cache-control", b"no-cache"))
                 headers.extend(
                     (
                         (b"content-security-policy", self._csp),
