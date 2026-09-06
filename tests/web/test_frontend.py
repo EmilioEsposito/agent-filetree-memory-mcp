@@ -62,6 +62,10 @@ def test_oidc_config_accepts_public_metadata_without_secrets() -> None:
         "scope": "openid profile email",
         "token_field": "id_token",
         "auto_login": True,
+        "adapter_url": None,
+        "adapter_config": {},
+        "connect_origins": [],
+        "script_origins": [],
     }
     assert "secret" not in str(payload).lower()
 
@@ -117,3 +121,34 @@ def test_bundled_frontend_has_view_first_memory_controls() -> None:
     assert "Delete file" in javascript
     assert "It will become unreadable immediately" in javascript
     assert "This file is empty." in javascript
+
+
+def test_host_adapter_is_public_same_origin_and_scopes_csp() -> None:
+    auth = FrontendAuthConfig(
+        mode="adapter",
+        adapter_url="../auth/provider.js",
+        adapter_config={"public_client_id": "browser"},
+        script_origins=("https://identity.example.test",),
+        connect_origins=("https://identity.example.test",),
+    )
+    with TestClient(create_management_frontend(ManagementFrontendConfig(auth=auth))) as client:
+        config = client.get("/config.json").json()
+        csp = client.get("/").headers["content-security-policy"]
+    assert config["auth"]["adapter_url"] == "../auth/provider.js"
+    assert config["auth"]["adapter_config"] == {"public_client_id": "browser"}
+    assert "script-src 'self' https://identity.example.test;" in csp
+    assert "connect-src 'self' https://identity.example.test;" in csp
+    assert "unsafe-inline" not in csp
+    assert "*" not in csp
+
+
+@pytest.mark.parametrize("url", ["https://other.test/auth.js", "//other.test/auth.js", "javascript:alert(1)"])
+def test_host_adapter_cannot_be_an_external_script(url: str) -> None:
+    with pytest.raises(ValueError, match="same-origin"):
+        FrontendAuthConfig(mode="adapter", adapter_url=url)
+
+
+@pytest.mark.parametrize("origin", ["https://*.example.test", "https://id.test/path", "http://id.test", "https://id.test; script-src *", "https://user:pass@id.test"])
+def test_adapter_csp_rejects_broad_or_injected_sources(origin: str) -> None:
+    with pytest.raises(ValueError, match="exact HTTPS origins"):
+        FrontendAuthConfig(mode="adapter", adapter_url="/auth.js", script_origins=(origin,))

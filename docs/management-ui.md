@@ -49,25 +49,50 @@ intentionally unavailable in the standalone renderer.
 
 ## Browser authentication modes
 
-`FrontendAuthConfig` supports three deployment-neutral modes:
+`FrontendAuthConfig` supports four deployment-neutral modes:
 
-- `oidc`: use Authorization Code with PKCE through a configured public client.
+- `oidc`: Authorization Code with PKCE through a public client. The issuer, client ID,
+  scopes, and token field are public metadata. Standard redirect logout is used when the
+  provider advertises an end-session endpoint. Otherwise the UI attempts advertised token
+  revocation and clears its own session; the provider's browser session may remain active.
+- `adapter`: a host-owned browser SDK integration with provider-native login, token refresh,
+  logout, and session-change notifications. Use this when generic OIDC does not match the
+  provider's browser-session model.
+- `session`: an authenticated same-origin cookie established by the embedding service or proxy.
+- `none`: no browser credential; only for a fixed local principal or enclosing trusted boundary.
 
-Providers may omit the OIDC end-session endpoint. In that case, sign-out revokes this
-application's tokens when the provider advertises revocation, then clears the browser's
-local app session. The identity provider's own browser session remains active; a later
-sign-in can reuse it. Providers advertising an end-session endpoint use the standard
-redirect logout flow.
-  The issuer, client ID, scopes, and token field are public browser metadata;
-  the management API must still verify every bearer token independently.
-- `session`: rely on an authenticated same-origin cookie established by the
-  embedding service or reverse proxy.
-- `none`: send no browser credential. This is suitable only when the API uses a
-  fixed local principal or another enclosing trusted boundary.
+The UI never receives a client secret. Runtime `config.json` is public and not cached.
+The API independently verifies every credential; an adapter cannot grant API access.
+OIDC callbacks must be registered for the exact externally visible `/ui/` URL.
 
-The UI never receives a client secret. Its runtime `config.json` is non-secret,
-not cached, and restricted to same-origin API URLs. OIDC redirect URIs must be
-registered for the exact externally visible `/ui/` URL.
+### Host authentication adapter
+
+Set `mode="adapter"`, a same-origin relative `adapter_url` (for example `../auth/provider.js`),
+and JSON-compatible public `adapter_config`. The ES module must export
+`createAuthAdapter({config, returnUrl})`, resolving to this interface:
+
+```typescript
+interface HostAuthAdapter {
+  sessionKey(): string | null;
+  subscribe(listener: (sessionKey: string | null) => void): () => void;
+  getToken(): Promise<string | null>;
+  login(returnUrl: string): Promise<void>;
+  logout(): Promise<void>;
+}
+```
+
+The UI initializes the module once per configuration, even across React remounts. The host
+must return a key that changes whenever the active identity/session changes, notify listeners
+(including cross-tab logout), and return an unsubscribe function. On a key change, the UI
+remounts private content so the previous account's loaded data and drafts disappear. Tokens
+are obtained on demand; the host SDK owns refresh. Logout must complete the provider's
+session termination or reject; clearing app storage alone is not sufficient. Redirects must
+stay on the host's trusted UI origin and preserve only intended product navigation.
+
+If the adapter loads an external SDK, explicitly allow its exact HTTPS origin in
+`script_origins` and `connect_origins`. These sources extend the restrictive UI CSP;
+wildcards, arbitrary directive strings, and inline script permissions are not supported.
+Host provider dependencies and scripts remain outside the open-source package.
 
 ## Authorization and decryption
 

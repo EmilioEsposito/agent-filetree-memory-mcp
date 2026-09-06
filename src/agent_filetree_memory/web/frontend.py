@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from importlib.resources import files
 from pathlib import Path
 import re
@@ -43,14 +43,32 @@ def _https_authority(value: str) -> str:
 class FrontendAuthConfig:
     """Browser authentication mode; all values are public client metadata."""
 
-    mode: Literal["none", "session", "oidc"]
+    mode: Literal["none", "session", "oidc", "adapter"]
     authority: str | None = None
     client_id: str | None = None
     scope: str = "openid profile email"
     token_field: Literal["id_token", "access_token"] = "access_token"
     auto_login: bool = False
+    adapter_url: str | None = None
+    adapter_config: dict[str, object] = field(default_factory=dict)
+    connect_origins: tuple[str, ...] = ()
+    script_origins: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.mode == "adapter":
+            if not self.adapter_url:
+                raise ValueError("adapter mode requires a same-origin adapter_url")
+            _relative_application_url(self.adapter_url, field="adapter_url")
+        elif self.adapter_url or self.adapter_config or self.connect_origins or self.script_origins:
+            raise ValueError("adapter configuration requires adapter mode")
+        for origin in (*self.connect_origins, *self.script_origins):
+            parsed = urlparse(origin)
+            if (
+                parsed.scheme != "https" or not parsed.netloc
+                or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+                or re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", parsed.netloc) is None
+            ):
+                raise ValueError("adapter CSP sources must be exact HTTPS origins")
         if self.mode == "oidc":
             if not self.authority or not self.client_id:
                 raise ValueError("OIDC mode requires authority and client_id")
@@ -102,18 +120,20 @@ class ManagementFrontendConfig:
 
 
 class _SecurityHeadersMiddleware:
-    def __init__(self, app: ASGIApp, *, oidc_authority: str | None) -> None:
+    def __init__(self, app: ASGIApp, *, auth: FrontendAuthConfig) -> None:
         self._app = app
         connect_sources = ["'self'"]
-        if oidc_authority:
-            parsed = urlparse(oidc_authority)
+        connect_sources.extend(auth.connect_origins)
+        script_sources = ["'self'", *auth.script_origins]
+        if auth.authority:
+            parsed = urlparse(auth.authority)
             connect_sources.append(f"{parsed.scheme}://{parsed.netloc}")
         self._csp = (
             "default-src 'none'; "
             "base-uri 'self'; "
             f"connect-src {' '.join(connect_sources)}; "
             "font-src 'self'; frame-ancestors 'none'; img-src 'self' data:; "
-            "manifest-src 'self'; script-src 'self'; style-src 'self'"
+            f"manifest-src 'self'; script-src {' '.join(script_sources)}; style-src 'self'"
         ).encode("ascii")
 
     async def __call__(
@@ -180,5 +200,5 @@ def create_management_frontend(
     )
     return _SecurityHeadersMiddleware(
         app,
-        oidc_authority=resolved.auth.authority,
+        auth=resolved.auth,
     )

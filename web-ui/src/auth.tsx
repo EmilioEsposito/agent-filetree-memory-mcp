@@ -1,4 +1,5 @@
 import {
+  Fragment,
   createContext,
   useCallback,
   useContext,
@@ -21,11 +22,15 @@ import {
   type RuntimeConfig,
 } from "./config";
 
+import { loadHostAdapter, type HostAuthAdapter } from "./auth-adapter";
+
 interface AuthContextValue {
   config: RuntimeConfig | null;
   authenticated: boolean;
   loading: boolean;
   error: string;
+  busy: boolean;
+  sessionKey: string | null;
   getToken: () => Promise<string | null>;
   login: () => Promise<void>;
   logout: () => Promise<void>;
@@ -36,6 +41,8 @@ const AuthContext = createContext<AuthContextValue>({
   authenticated: false,
   loading: true,
   error: "",
+  busy: false,
+  sessionKey: null,
   getToken: async () => null,
   login: async () => undefined,
   logout: async () => undefined,
@@ -58,14 +65,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const managerRef = useRef<UserManager | null>(null);
+  const adapterRef = useRef<HostAuthAdapter | null>(null);
+  const [adapterSession, setAdapterSession] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const operationBusy = useRef(false);
   const automaticLoginStarted = useRef(false);
 
   useEffect(() => {
     let active = true;
+    let unsubscribe: (() => void) | undefined;
     void getRuntimeConfig()
       .then(async (loaded) => {
         if (!active) return;
         setConfig(loaded);
+        if (loaded.auth.mode === "adapter") {
+          const adapter = await loadHostAdapter(loaded);
+          if (!active) return;
+          adapterRef.current = adapter;
+          unsubscribe = adapter.subscribe((key) => { if (active) setAdapterSession(key); });
+          setAdapterSession(adapter.sessionKey());
+          setLoading(false);
+          return;
+        }
         if (loaded.auth.mode !== "oidc") {
           setLoading(false);
           return;
@@ -109,23 +130,62 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(current && !current.expired ? current : null);
         setLoading(false);
       })
-      .catch((caught: unknown) => {
+      .catch(() => {
         if (!active) return;
-        setError(caught instanceof Error ? caught.message : String(caught));
+        setError("Sign-in could not load. Please reload to retry.");
         setLoading(false);
       });
     return () => {
       active = false;
+      unsubscribe?.();
     };
   }, []);
 
   const login = useCallback(async () => {
-    if (!config || config.auth.mode !== "oidc" || !managerRef.current) return;
+    if (operationBusy.current) return;
+    if (!config) {
+      window.location.reload();
+      return;
+    }
+    operationBusy.current = true;
+    setBusy(true);
     setError("");
-    await managerRef.current.signinRedirect({ state: window.location.search });
+    try {
+      if (config.auth.mode === "adapter") {
+        if (!adapterRef.current) {
+          window.location.reload();
+          return;
+        }
+        await adapterRef.current.login(window.location.href);
+      } else if (config.auth.mode === "oidc") {
+        await managerRef.current?.signinRedirect({ state: window.location.search });
+      }
+    } catch {
+      setError("Sign-in could not start. Please try again.");
+    } finally {
+      operationBusy.current = false;
+      setBusy(false);
+    }
   }, [config]);
 
   const logout = useCallback(async () => {
+    if (config?.auth.mode === "adapter") {
+      if (operationBusy.current) return;
+      operationBusy.current = true;
+      setBusy(true);
+      setError("");
+      automaticLoginStarted.current = true;
+      try {
+        await adapterRef.current?.logout();
+        setAdapterSession(null);
+      } catch {
+        setError("Sign-out could not complete. Please try again.");
+      } finally {
+        operationBusy.current = false;
+        setBusy(false);
+      }
+      return;
+    }
     if (!config || config.auth.mode !== "oidc" || !managerRef.current) return;
     const manager = managerRef.current;
     setError("");
@@ -155,6 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [config]);
 
   const getToken = useCallback(async (): Promise<string | null> => {
+    if (config?.auth.mode === "adapter") return adapterRef.current?.getToken() ?? null;
     if (!config || config.auth.mode !== "oidc") return null;
     const current = await managerRef.current?.getUser();
     const token = tokenFor(config, current ?? null);
@@ -164,7 +225,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const authenticated = Boolean(
     config &&
-      (config.auth.mode !== "oidc" || tokenFor(config, user) !== null),
+      (config.auth.mode === "adapter" ? adapterSession !== null :
+        config.auth.mode !== "oidc" || tokenFor(config, user) !== null),
   );
 
   useEffect(() => {
@@ -189,17 +251,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authenticated,
       loading,
       error,
+      busy,
+      sessionKey: adapterSession,
       getToken,
       login,
       logout,
     }),
-    [authenticated, config, error, getToken, loading, login, logout],
+    [authenticated, config, error, busy, adapterSession, getToken, loading, login, logout],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function AuthGuard({ children }: { children: ReactNode }) {
-  const { authenticated, loading, error, login } = useAuth();
+  const { authenticated, loading, error, busy, sessionKey, login } = useAuth();
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-950">
@@ -215,10 +279,10 @@ export function AuthGuard({ children }: { children: ReactNode }) {
             <Shield className="h-8 w-8 text-blue-600 dark:text-blue-300" />
           </div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            Authentication required
+            Sign in to your memory
           </h1>
           <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-            Sign in through the identity provider configured by this deployment.
+            Access your workspaces and agent memories.
           </p>
           {error && (
             <p className="mt-4 rounded-lg bg-red-50 p-3 text-left text-sm text-red-700 dark:bg-red-950/40 dark:text-red-200">
@@ -227,14 +291,18 @@ export function AuthGuard({ children }: { children: ReactNode }) {
           )}
           <button
             className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 font-medium text-white hover:bg-blue-700"
+            disabled={busy}
             onClick={() => void login()}
           >
             <LogIn className="h-5 w-5" />
-            Sign in
+            {busy ? "Signing in…" : "Sign in"}
           </button>
         </div>
       </div>
     );
   }
-  return <>{children}</>;
+  return <>
+    {error && <p role="alert" className="bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-200">{error}</p>}
+    <Fragment key={sessionKey}>{children}</Fragment>
+  </>;
 }

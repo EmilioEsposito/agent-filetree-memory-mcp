@@ -45,3 +45,19 @@ jobs:
       - run: uv run python -m devtools.postgres
       - name: Validate eval fixtures and graders without model calls
         run: uv run python -m devtools.postgres -- uv run --locked --group evals python -m evals.run --suite all --split all
+
+  frontend:
+    name: Frontend authentication and bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
+      - run: npm ci
+        working-directory: web-ui
+      - run: npm run typecheck && npm test && npm run build
+        working-directory: web-ui
+      - run: git diff --exit-code -- src/agent_filetree_memory/web/dist
