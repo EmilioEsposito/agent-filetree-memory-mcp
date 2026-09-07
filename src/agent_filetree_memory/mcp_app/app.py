@@ -334,7 +334,7 @@ def _load_directory_actions(
                 SetState("loading", False),
                 SetState(
                     "load_error",
-                    "The directory could not be loaded for this verified capability.",
+                    "This folder could not be loaded. Try Refresh.",
                 ),
             ],
         ),
@@ -366,8 +366,8 @@ def _open_document_actions(
                 SetState(
                     "load_error",
                     (
-                        "The document is unavailable or not authorized for this "
-                        "capability."
+                        "This note could not be opened. It may have been removed "
+                        "or your access may have changed."
                     ),
                 ),
             ],
@@ -788,19 +788,7 @@ def create_memory_browser_app(
             with Row(gap=3, align="center", justify="between"):
                 with Column(gap=1):
                     Heading("Agent memory", level=1)
-                    Muted(
-                        "Browse and edit only the memory authorized for this "
-                        "verified agent context."
-                    )
-                Badge("Current capability", variant="secondary")
-
-            with Alert(variant="info", icon="shield-check"):
-                AlertTitle("Private by capability")
-                AlertDescription(
-                    "The browser never accepts workspace or profile "
-                    "identifiers. "
-                    "Changing agent context requires a new verified invocation."
-                )
+                    Muted("Browse and edit the notes connected to this agent.")
 
             with If(STATE.load_error != ""):
                 with Alert(variant="destructive", icon="triangle-alert"):
@@ -1262,7 +1250,7 @@ def create_memory_browser_app(
                     SetState("loading", False),
                     SetState(
                         "load_error",
-                        "Memory could not be loaded for this verified capability.",
+                        "Your notes could not be loaded. Try Refresh.",
                     ),
                 ],
             ),
