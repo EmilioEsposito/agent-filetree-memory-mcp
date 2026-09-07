@@ -67,6 +67,7 @@ agent-filetree-memory-migrate = "agent_filetree_memory.migrate_cli:main"
 dev = [
     "agent-filetree-memory-mcp[all]",
     "build>=1.3.0,<2",
+    "playwright>=1.58,<2",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
 ]

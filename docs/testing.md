@@ -60,10 +60,19 @@ These tests use PostgreSQL. SQLite is not an acceptable substitute for locking, 
 
 ## MCP and app tests
 
+The bundled renderer is exercised in Chromium through a synthetic MCP Apps host
+that allows only tools advertised by `tools/list`. This catches discovery and
+rendering failures that direct Python calls to backend tools cannot detect.
+Run `uv run playwright install chromium`, then
+`AFM_BROWSER_TESTS=1 uv run pytest tests/mcp/test_browser_renderer.py`.
+CI runs this check alongside PostgreSQL integration tests.
+
 - Tool schemas contain no scope or capability-token arguments
 - Clients without app support receive useful text and structured results
 - MCP Apps resource metadata, MIME type, and network policy are correct
 - UI-only backend helpers remain hidden from the model
+- App-only helpers remain discoverable to the host with their exact callable names
+- Nested folder navigation and document reads run through the shipped renderer
 - Two app instances surface compare-and-swap conflicts instead of overwriting
 - Malicious Markdown cannot execute HTML or load arbitrary external resources
 

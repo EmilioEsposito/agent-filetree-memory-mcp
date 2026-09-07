@@ -919,6 +919,7 @@ def create_memory_browser_app(
 
                             with If(
                                 (~STATE.loading)
+                                & (STATE.load_error == "")
                                 & (STATE.listing.directories.length() == 0)
                                 & (STATE.listing.documents.length() == 0)
                             ):

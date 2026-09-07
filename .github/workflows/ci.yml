@@ -43,6 +43,10 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --group evals
       - run: uv run python -m devtools.postgres
+      - name: Install browser for MCP Apps contract checks
+        run: uv run playwright install --with-deps chromium
+      - name: Exercise shipped MCP Apps renderer and advertised tools
+        run: AFM_BROWSER_TESTS=1 uv run pytest tests/mcp/test_browser_renderer.py
       - name: Validate eval fixtures and graders without model calls
         run: uv run python -m devtools.postgres -- uv run --locked --group evals python -m evals.run --suite all --split all
 
