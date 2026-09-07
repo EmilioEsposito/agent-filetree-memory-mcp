@@ -16,13 +16,13 @@ from ..domain.models import MemoryAction, VerifiedInvocation
 from ..ports.capabilities import InvocationResolver
 from .payloads import (
     DeletePayload,
-    HistoricalDocumentPayload,
-    MemoryHistoryPayload,
-    WritePayload,
     DirectoryPayload,
     GlobPayload,
     GrepPayload,
+    HistoricalDocumentPayload,
+    MemoryHistoryPayload,
     ReadPayload,
+    WritePayload,
     delete_payload,
     historical_document_payload,
     history_payload,
@@ -514,6 +514,35 @@ class _AuthorizationFirstArgumentMiddleware(Middleware):
         return await call_next(context.copy(message=message))
 
 
+class _AppToolDiscoveryMiddleware(Middleware):
+    """Advertise app-only tools at the exact names emitted by the renderer.
+
+    FastMCP 3.4.2 omits these from tools/list. MCP Apps hosts need their
+    schemas to allow UI calls; visibility metadata keeps them out of the
+    model's tool list. Invocation and app-instance checks still authorize
+    every call, independently of discovery.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def on_list_tools(
+        self, context: MiddlewareContext[Any], call_next: Any
+    ) -> Any:
+        from fastmcp.server.providers.addressing import hashed_backend_name
+
+        tools = list(await call_next(context))
+        names = {tool.name for tool in tools}
+        for tool in await self._app.list_tools():
+            if (tool.meta or {}).get("ui", {}).get("visibility") != ["app"]:
+                continue
+            name = hashed_backend_name(self._app.name, tool.name)
+            if name not in names:
+                tools.append(tool.model_copy(update={"name": name}))
+                names.add(name)
+        return tools
+
+
 def create_mcp_server(
     service: MemoryService,
     invocation_resolver: InvocationResolver,
@@ -862,13 +891,13 @@ def create_mcp_server(
                 ) from exc
             raise
 
-        mcp.add_provider(
-            create_memory_browser_app(
-                service,
-                invocation_resolver,
-                app_instance_signing_key=app_instance_signing_key,
-            )
+        browser_app = create_memory_browser_app(
+            service,
+            invocation_resolver,
+            app_instance_signing_key=app_instance_signing_key,
         )
+        mcp.add_provider(browser_app)
+        mcp.add_middleware(_AppToolDiscoveryMiddleware(browser_app))
 
     return mcp
 
